@@ -32,7 +32,7 @@ Existing rules and names are kept, so it's safe to run again.
 
 1. Lists their open bills, or the selected ones, and any credit in their favour that isn't applied yet (an earlier overpayment, a payment made before the bill, a debit note).
 2. Applies that credit to the oldest bills first.
-3. Opens a new payment for the rest, with every bill attached, the amount filled in, and the bank account they're usually paid from. The reference reads like `Novo payout 2026-11-06 <supplier>`, since Novo shows no transfer number. Swap in the bank's number when there is one (Wise), then save and submit. Once Bank Review matches the payment, its bank line links the bank's own transaction ID.
+3. Opens a new payment for the rest, with every bill attached, the amount filled in, and the bank account they're usually paid from. The reference names the bank it's paid from, e.g. `Novo payout 2026-11-06 <supplier>`. Novo shows no transfer number, so keep it as is. A payment from Wise can use Wise's own transfer number instead if you prefer. Then save and submit. Once Bank Review matches the payment, its bank line links the bank's own transaction ID.
 
 ## Install
 
