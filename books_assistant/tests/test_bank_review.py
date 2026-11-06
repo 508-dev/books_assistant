@@ -112,3 +112,5 @@ class TestPaySupplier(unittest.TestCase):
         self.assertEqual(payment["__islocal"], 1)
         self.assertAlmostEqual(flt(payment["paid_amount"]), flt(preview["to_pay"]), places=2)
         self.assertEqual(len(payment["references"]), len(ps.open_bills(supplier)))
+        self.assertIn("payout", payment["reference_no"])
+        self.assertIn(supplier, payment["reference_no"])

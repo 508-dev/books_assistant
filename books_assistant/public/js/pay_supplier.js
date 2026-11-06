@@ -63,7 +63,7 @@ books_assistant.pay_supplier = function (supplier, invoices) {
 								const payment = frappe.model.sync(message.payment_entry)[0];
 								frappe.set_route("Form", payment.doctype, payment.name);
 								frappe.show_alert({
-									message: __("Add the bank's reference number, then save and submit."),
+									message: __("Check the payment (swap in the bank's transfer number if it shows one), then save and submit."),
 									indicator: "blue",
 								});
 							} else {

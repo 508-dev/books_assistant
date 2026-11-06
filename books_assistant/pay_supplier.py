@@ -1,7 +1,10 @@
-"""Pay a supplier what we owe: earlier credit is applied to their bills first, then a draft payment covers the rest.
+"""Pay a supplier what we owe: earlier credit is applied to their bills first, then a payment covers the rest.
 
 Credit means anything already in the supplier's favour that isn't applied to a bill: an earlier payment that was
-more than the bill (or made before it), or a debit note. The payment is left as a draft to check and submit.
+more than the bill (or made before it), or a debit note. The payment opens unsaved, ready to check and submit.
+
+Its reference says what the payment is (e.g. "Novo payout 2026-11-06 Jane Doe"), because some banks (Novo) show no
+transfer number to copy. Once Bank Review matches the payment to its bank line, the line links the bank's own ID.
 """
 
 import frappe
@@ -38,7 +41,7 @@ def prepare(supplier, invoices=None, bank_account=None):
         frappe.throw(_("Nothing is owed to {0}.").format(supplier))
     applied = apply_credit(supplier, names)
     bills = open_bills(supplier, names)
-    payment = new_payment(bills, bank_account or usual_bank_account(supplier)) if bills else None
+    payment = new_payment(supplier, bills, bank_account or usual_bank_account(supplier)) if bills else None
     return {"payment_entry": payment.as_dict() if payment else None, "credit_applied": applied}
 
 
@@ -96,7 +99,7 @@ def apply_credit(supplier, bill_names):
     return applied
 
 
-def new_payment(bills, bank_gl):
+def new_payment(supplier, bills, bank_gl):
     from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
 
     pe = get_payment_entry("Purchase Invoice", bills[0].name, bank_account=bank_gl)
@@ -114,8 +117,14 @@ def new_payment(bills, bank_gl):
     pe.paid_amount = pe.received_amount = total
     pe.paid_from = bank_gl
     pe.posting_date = pe.reference_date = today()
-    pe.reference_no = None  # the bank's reference, filled in when the money is sent
+    pe.reference_no = payout_reference(bank_gl, supplier)
     return pe
+
+
+def payout_reference(bank_gl, supplier):
+    """A reference that identifies the payout, for banks that show no transfer number."""
+    bank = (bank_gl or "").split(" - ")[0] or _("Bank")
+    return f"{bank} payout {today()} {supplier}"[:140]
 
 
 def usual_bank_account(supplier):
