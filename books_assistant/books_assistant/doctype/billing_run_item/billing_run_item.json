@@ -1,0 +1,120 @@
+{
+ "actions": [],
+ "creation": "2026-11-09 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "project",
+  "customer",
+  "billing_method",
+  "hours",
+  "client_amount",
+  "engineer_cost",
+  "referral_cost",
+  "margin_pct",
+  "sales_invoice",
+  "engineer_bills",
+  "issues",
+  "outcome"
+ ],
+ "fields": [
+  {
+   "fieldname": "project",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Project",
+   "options": "Project",
+   "read_only": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Customer",
+   "options": "Customer",
+   "read_only": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "billing_method",
+   "fieldtype": "Data",
+   "label": "Billing Method",
+   "read_only": 1
+  },
+  {
+   "fieldname": "hours",
+   "fieldtype": "Float",
+   "label": "Hours",
+   "read_only": 1
+  },
+  {
+   "fieldname": "client_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Client Invoice",
+   "read_only": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "engineer_cost",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Engineer Bills",
+   "read_only": 1,
+   "columns": 1
+  },
+  {
+   "fieldname": "referral_cost",
+   "fieldtype": "Currency",
+   "label": "Referral Fees (expected)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "margin_pct",
+   "fieldtype": "Percent",
+   "in_list_view": 1,
+   "label": "Margin",
+   "read_only": 1,
+   "columns": 1
+  },
+  {
+   "fieldname": "sales_invoice",
+   "fieldtype": "Link",
+   "label": "Client Invoice",
+   "options": "Sales Invoice",
+   "read_only": 1
+  },
+  {
+   "fieldname": "engineer_bills",
+   "fieldtype": "Small Text",
+   "label": "Engineer Bills",
+   "read_only": 1
+  },
+  {
+   "fieldname": "issues",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Issues",
+   "read_only": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "outcome",
+   "fieldtype": "Small Text",
+   "label": "Outcome",
+   "read_only": 1
+  }
+ ],
+ "istable": 1,
+ "modified": "2026-11-09 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Books Assistant",
+ "name": "Billing Run Item",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

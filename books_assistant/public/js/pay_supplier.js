@@ -5,16 +5,31 @@ books_assistant.pay_supplier = function (supplier, invoices) {
 	frappe
 		.call({ method: "books_assistant.pay_supplier.preview", args: { supplier, invoices: invoices || null } })
 		.then(({ message: p }) => {
-			if (!p.bills.length) {
-				frappe.msgprint(__("Nothing is owed to {0}.", [supplier]));
-				return;
-			}
 			const esc = frappe.utils.escape_html;
 			const money = (v) => format_currency(v, "USD");
+			const link = (doctype, name) =>
+				`<a href="/app/${frappe.router.slug(doctype)}/${encodeURIComponent(name)}">${esc(name)}</a>`;
+			const held = p.held.length
+				? `<p class="text-muted">${__("On hold, not included (paid once released):")}</p>
+					<ul style="font-size: 12px">${p.held
+						.map(
+							(b) =>
+								`<li>${link("Purchase Invoice", b.name)}, ${money(b.outstanding_amount)}: ${
+									b.client_invoice
+										? __("waiting for the client to pay {0}", [link("Sales Invoice", b.client_invoice)])
+										: esc(b.hold_comment || __("on hold"))
+								}</li>`
+						)
+						.join("")}</ul>`
+				: "";
+			if (!p.bills.length) {
+				frappe.msgprint(__("Nothing is owed to {0} that can be paid now.", [supplier]) + held);
+				return;
+			}
 			const bills = p.bills
 				.map(
 					(b) =>
-						`<tr><td><a href="/app/purchase-invoice/${encodeURIComponent(b.name)}">${esc(b.name)}</a></td>
+						`<tr><td>${link("Purchase Invoice", b.name)}</td>
 						<td>${esc(b.posting_date)}</td><td>${esc(b.project || "")}</td>
 						<td class="text-right">${money(b.outstanding_amount)}</td></tr>`
 				)
@@ -36,7 +51,7 @@ books_assistant.pay_supplier = function (supplier, invoices) {
 							<thead><tr><th>${__("Bill")}</th><th>${__("Date")}</th><th>${__("Project")}</th>
 							<th class="text-right">${__("Owed")}</th></tr></thead><tbody>${bills}</tbody>
 							<tfoot><tr><th colspan="3">${__("Total owed")}</th><th class="text-right">${money(p.bills_total)}</th></tr></tfoot>
-						</table>${credit}
+						</table>${credit}${held}
 						<h4>${__("To pay: {0}", [money(p.to_pay)])}</h4>`,
 					},
 					{

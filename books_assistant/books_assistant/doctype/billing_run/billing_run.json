@@ -1,0 +1,174 @@
+{
+ "actions": [],
+ "autoname": "BR-.YYYY.-.MM.-.##",
+ "creation": "2026-11-09 00:00:00.000000",
+ "description": "One month's billing: client invoices from approved timesheets, engineer bills, and referral fees, prepared as drafts and approved together.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "title",
+  "period_start",
+  "period_end",
+  "column_break_period",
+  "invoice_date",
+  "status",
+  "section_projects",
+  "issues_html",
+  "items",
+  "section_totals",
+  "total_hours",
+  "total_client",
+  "column_break_totals",
+  "total_engineer",
+  "total_referral",
+  "total_margin_pct",
+  "notes"
+ ],
+ "fields": [
+  {
+   "fieldname": "title",
+   "label": "Title",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "period_start",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Timesheets Ending From",
+   "reqd": 1,
+   "description": "Each timesheet is billed whole, in the run covering the day it ends."
+  },
+  {
+   "fieldname": "period_end",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Timesheets Ending To",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_period",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Today",
+   "description": "Date on the client invoices and engineer bills.",
+   "fieldname": "invoice_date",
+   "fieldtype": "Date",
+   "label": "Invoice Date",
+   "reqd": 1
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Draft\nPrepared\nApproved",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_projects",
+   "fieldtype": "Section Break",
+   "label": "Projects"
+  },
+  {
+   "fieldname": "issues_html",
+   "fieldtype": "HTML",
+   "label": "To Check"
+  },
+  {
+   "fieldname": "items",
+   "fieldtype": "Table",
+   "label": "Projects",
+   "options": "Billing Run Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_totals",
+   "fieldtype": "Section Break",
+   "label": "Totals"
+  },
+  {
+   "fieldname": "total_hours",
+   "fieldtype": "Float",
+   "label": "Hours",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_client",
+   "fieldtype": "Currency",
+   "label": "Client Invoices",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_totals",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "total_engineer",
+   "fieldtype": "Currency",
+   "label": "Engineer Bills",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_referral",
+   "fieldtype": "Currency",
+   "label": "Referral Fees (expected)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_margin_pct",
+   "fieldtype": "Percent",
+   "label": "Margin",
+   "read_only": 1
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "modified": "2026-11-09 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Books Assistant",
+ "name": "Billing Run",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Billing Approver",
+   "write": 1
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User"
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "title",
+ "show_title_field_in_link": 1
+}

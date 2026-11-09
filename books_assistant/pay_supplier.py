@@ -29,6 +29,7 @@ def preview(supplier, invoices=None):
         "credit_to_apply": min(bills_total, credit_total),
         "to_pay": flt(max(bills_total - credit_total, 0), 2),
         "bank_account": usual_bank_account(supplier),
+        "held": held_bills(supplier),
     }
 
 
@@ -46,13 +47,24 @@ def prepare(supplier, invoices=None, bank_account=None):
 
 
 def open_bills(supplier, names=None):
-    filters = {"supplier": supplier, "docstatus": 1, "outstanding_amount": [">", 0.009], "is_return": 0}
+    filters = {"supplier": supplier, "docstatus": 1, "outstanding_amount": [">", 0.009], "is_return": 0,
+               "on_hold": 0}
     if names:
         filters["name"] = ["in", names]
     return frappe.get_all(
         "Purchase Invoice",
         filters=filters,
         fields=["name", "posting_date", "bill_no", "project", "grand_total", "outstanding_amount"],
+        order_by="posting_date, name",
+    )
+
+
+def held_bills(supplier):
+    """Bills on hold, which aren't paid until released (automatically when the client pays, or by hand)."""
+    return frappe.get_all(
+        "Purchase Invoice",
+        filters={"supplier": supplier, "docstatus": 1, "outstanding_amount": [">", 0.009], "on_hold": 1},
+        fields=["name", "posting_date", "project", "outstanding_amount", "client_invoice", "hold_comment"],
         order_by="posting_date, name",
     )
 
