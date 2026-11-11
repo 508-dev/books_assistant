@@ -269,6 +269,10 @@ class Context:
         else:
             confidence = CHECK
             note = _(" (pays {0} more than is open; the rest will sit unapplied)").format(fmt(amount - total))
+        held = [i.name for i in invoices if i.get("on_hold")]
+        if held:
+            confidence = CHECK
+            note += _(". {0} is on hold until the client pays; recording this payment releases it").format(", ".join(held))
         verb = _("Payment from {0} for {1}") if kind == "receipt" else _("Payment to {0} for {1}")
         return {
             "kind": kind,
@@ -368,6 +372,8 @@ def make_payment(s):
     from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
 
     bt = frappe.get_doc("Bank Transaction", s["bank_transaction"])
+    for inv in s["invoices"]:
+        release_if_held(inv["doctype"], inv["name"], bt.name)
     first = s["invoices"][0]
     pe = get_payment_entry(first["doctype"], first["name"], party_amount=s["amount"], bank_account=s["bank_gl"])
     if len(s["invoices"]) > 1:
@@ -433,10 +439,8 @@ def journal_from_line(bank_transaction, account):
 def current_invoice(doctype, name):
     """The live version of an invoice, following amendments if the named one was cancelled."""
     for _hop in range(5):
-        row = frappe.db.get_value(
-            doctype, name, ["name", "docstatus", "outstanding_amount",
-                            "customer as party" if doctype == "Sales Invoice" else "supplier as party"], as_dict=True
-        )
+        row = frappe.db.get_value(doctype, name, ["name", "docstatus", "outstanding_amount"] + party_fields(doctype),
+                                  as_dict=True)
         if not row:
             return None
         if row.docstatus == 1:
@@ -447,14 +451,29 @@ def current_invoice(doctype, name):
     return None
 
 
+def party_fields(doctype):
+    """The party as "party", and for bills whether they're on hold (waiting for the client to pay)."""
+    return ["customer as party"] if doctype == "Sales Invoice" else ["supplier as party", "on_hold", "client_invoice"]
+
+
 def outstanding_invoices(doctype, party):
     party_field = "customer" if doctype == "Sales Invoice" else "supplier"
     return frappe.get_all(
         doctype,
         filters={party_field: party, "docstatus": 1, "outstanding_amount": [">", 0.009], "is_return": 0},
-        fields=["name", "outstanding_amount", f"{party_field} as party", "posting_date"],
+        fields=["name", "outstanding_amount", "posting_date"] + party_fields(doctype),
         order_by="posting_date, name",
     )
+
+
+def release_if_held(doctype, name, bank_transaction):
+    """The money has already left the bank, so a hold on the bill no longer applies."""
+    if doctype != "Purchase Invoice" or not frappe.db.get_value(doctype, name, "on_hold"):
+        return
+    bill = frappe.get_doc(doctype, name)
+    bill.db_set({"on_hold": 0, "release_date": None})
+    bill.add_comment("Comment", _("Released from hold: paid from bank line {0} before the client paid.")
+                     .format(bank_transaction))
 
 
 def fmt(amount):
