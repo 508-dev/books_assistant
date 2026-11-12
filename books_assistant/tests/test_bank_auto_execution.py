@@ -19,6 +19,7 @@ class TestBankAutomaticBookingRuntime(unittest.TestCase):
         self.raw_existing_candidate = self.auto._existing_candidate
         self.frappe.flags = SimpleNamespace()
         self.frappe.log_error = Mock()
+        self.frappe.db.set_single_value = Mock()
         self.frappe.db.savepoint = Mock()
         self.frappe.db.rollback = Mock(side_effect=self.rollback)
         self.frappe.db.exists = Mock(side_effect=self.exists)
@@ -177,3 +178,45 @@ class TestBankAutomaticBookingRuntime(unittest.TestCase):
         self.frappe.db.sql = Mock(return_value=[Doc(name="Hidden Customer", customer_name="GITHUB SUBSCRIPTION", bank_names="")])
         self.assertEqual(self.raw_existing_candidate(self.bt, self.gl.name, {"company": "Co-op", "currency": "USD"}),
                          "PARTY_CANDIDATE")
+
+
+    def test_unmatched_lines_advance_scan_cursor_without_booking(self):
+        self.auto._current_rules.side_effect = lambda: []
+        result = self.auto._run("Co-op")
+        self.assertEqual(self.codes(result), ["NO_MATCHING_RULE"])
+        self.review.execute.assert_not_called()
+        self.frappe.db.set_single_value.assert_called_once_with("Automation Settings", "bank_auto_scan_after", "BT-NEXT")
+
+    def test_scan_resumes_after_previous_review_only_lines(self):
+        self.settings.bank_auto_scan_after = "BT-EARLIER"
+        self.auto._run("Co-op")
+        query = next(call for call in self.frappe.get_list.call_args_list if call.args[0] == "Bank Transaction")
+        self.assertEqual(query.kwargs["filters"]["name"], [">", "BT-EARLIER"])
+        self.assertEqual(query.kwargs["order_by"], "name")
+        self.assertEqual(query.kwargs["limit_page_length"], self.auto.MAX_LINES_PER_RUN)
+
+    def test_scan_wraps_when_no_names_follow_previous_cursor(self):
+        self.settings.bank_auto_scan_after = "BT-ZZZ"
+        filters_seen = []
+        def get_list(doctype, **kwargs):
+            if doctype == "Bank Account":
+                return ["Operating Bank"]
+            filters_seen.append(dict(kwargs["filters"]))
+            return [] if "name" in kwargs["filters"] else ["BT-NEXT"]
+        self.frappe.get_list.side_effect = get_list
+        self.assertEqual(self.codes(self.auto._run("Co-op")), ["BOOKED"])
+        self.assertEqual(filters_seen[0]["name"], [">", "BT-ZZZ"])
+        self.assertNotIn("name", filters_seen[1])
+
+
+    def test_operator_summary_retains_decision_counts_without_record_details(self):
+        self.auto.run("Co-op")
+        summary_call = next(call for call in self.frappe.db.set_single_value.call_args_list
+                            if call.args[1] == "bank_auto_last_summary")
+        import json
+        summary = json.loads(summary_call.args[2])
+        self.assertEqual(summary["decisions"], {"BOOKED": 1})
+        self.assertEqual(summary["processed"], 1)
+        self.assertEqual(summary["action_id"], "bank.auto.run")
+        for private in ("BT-NEXT", "JE-AUTO", "GitHub", "finance@example.test"):
+            self.assertNotIn(private, summary_call.args[2])
