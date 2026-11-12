@@ -12,7 +12,7 @@ frappe.ui.form.on("Billing Run", {
 		if (frm.is_new()) return;
 		const roles = frappe.user_roles;
 		const can_approve = roles.includes("Billing Approver") || roles.includes("System Manager");
-		const done = (r) => /^(Approved|Left out)/.test(r.outcome || "");
+		const done = (r) => ["approved", "left_out"].includes(r.item_status);
 		const pending = (frm.doc.items || []).filter((r) => !done(r));
 
 		if (frm.doc.status === "Draft") {
@@ -27,7 +27,7 @@ frappe.ui.form.on("Billing Run", {
 			if (can_approve && pending.length) {
 				frm.add_custom_button(__("Approve and Send"), () => approve(frm, pending)).addClass("btn-primary");
 			}
-			if (!(frm.doc.items || []).some((r) => (r.outcome || "").startsWith("Approved"))) {
+			if (!(frm.doc.items || []).some((r) => r.item_status === "approved")) {
 				frm.add_custom_button(__("Discard Drafts"), () =>
 					frappe.confirm(
 						__("Delete this run's draft invoices and bills, so it can be prepared again?"),
@@ -36,7 +36,7 @@ frappe.ui.form.on("Billing Run", {
 				);
 			}
 			const issues = pending.filter((r) => r.issues).length;
-			const failed = pending.filter((r) => (r.outcome || "").startsWith("Not approved")).length;
+			const failed = pending.filter((r) => r.item_status === "failed").length;
 			frm.dashboard.set_headline(
 				[
 					__("{0} project(s) waiting for approval.", [pending.length]),
@@ -73,7 +73,7 @@ function render_issues(frm) {
 	const rows = (frm.doc.items || []).filter((r) => r.issues || r.outcome);
 	const html = rows
 		.map((r) => {
-			const failed = (r.outcome || "").startsWith("Not approved");
+			const failed = r.item_status === "failed";
 			const outcome = r.outcome
 				? `<div class="${failed ? "text-danger" : "text-success"}">${esc(r.outcome)}</div>`
 				: "";
@@ -116,7 +116,7 @@ function approve(frm, pending) {
 				fieldtype: "MultiCheck",
 				label: __("Projects"),
 				options: pending.map((r) => ({
-					label: `${r.project} · ${r.customer || __("internal")} · ${format_currency(r.client_amount, "USD")}${
+					label: `${r.project} · ${r.customer || __("internal")} · ${format_currency(r.client_amount, frm.doc.currency)}${
 						r.issues ? " ⚠" : ""
 					}`,
 					value: r.project,
@@ -140,17 +140,49 @@ function approve(frm, pending) {
 				}
 			);
 		},
-		primary_action_label: __("Approve and Send"),
+		primary_action_label: __("Review selected"),
 		primary_action(values) {
 			if (!values.projects.length) return;
 			dialog.hide();
-			frm.call({
-				doc: frm.doc,
-				method: "approve",
-				args: { projects: values.projects },
+			frappe.call({
+				method: "books_assistant.billing_api.preview_billing_approval",
+				args: { run_id: frm.doc.name, projects: values.projects, company: frm.doc.company },
 				freeze: true,
-				freeze_message: __("Submitting and sending…"),
-			}).then(() => frm.reload_doc());
+			}).then(({ message: preview }) => confirm_preview(frm, preview));
+		},
+	});
+	dialog.show();
+}
+
+
+function confirm_preview(frm, preview) {
+	const esc = frappe.utils.escape_html;
+	const snapshot = preview.snapshot;
+	const rows = snapshot.projects.map((row) => {
+		const email = row.email_on_approval
+			? __("Queue invoice email to {0}; CC {1}", [row.recipients.join(", "), row.cc.join(", ") || "—"])
+			: __("No invoice email will be queued.");
+		return `<tr><td>${esc(row.project)}</td><td>${esc(row.sales_invoice || "—")}</td>
+			<td>${format_currency(row.client_amount, snapshot.currency)}</td>
+			<td>${esc(row.engineer_bills.join(", ") || "—")}</td><td>${esc(email)}</td></tr>`;
+	}).join("");
+	// Keep one key for this reviewed action; a retry must not create a second operation.
+	const request_id = crypto.randomUUID();
+	const dialog = new frappe.ui.Dialog({
+		title: __("Confirm reviewed billing"),
+		size: "extra-large",
+		fields: [{ fieldtype: "HTML", options: `<p>${esc(__(
+			"This submits the invoices and bills below, creates applicable referral bills, and applies the configured client-payment holds. Changed records require a new review."
+		))}</p><table class="table table-sm"><thead><tr><th>${__("Project")}</th><th>${__("Client invoice")}</th>
+			<th>${__("Amount")}</th><th>${__("Engineer bills")}</th><th>${__("Email")}</th></tr></thead><tbody>${rows}</tbody></table>` }],
+		primary_action_label: __("Approve billing"),
+		primary_action() {
+			frappe.call({
+				method: "books_assistant.billing_api.approve_billing",
+				args: { preview_id: preview.preview_id, request_id },
+				freeze: true,
+				freeze_message: __("Submitting reviewed billing…"),
+			}).then(() => { dialog.hide(); frm.reload_doc(); });
 		},
 	});
 	dialog.show();

@@ -7,6 +7,8 @@
  "engine": "InnoDB",
  "field_order": [
   "title",
+  "company",
+  "currency",
   "period_start",
   "period_end",
   "column_break_period",
@@ -128,6 +130,20 @@
    "fieldname": "notes",
    "fieldtype": "Small Text",
    "label": "Notes"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "options": "Company",
+   "label": "Company",
+   "read_only": 1
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "options": "Currency",
+   "label": "Currency",
+   "read_only": 1
   }
  ],
  "modified": "2026-11-09 00:00:00.000000",

@@ -15,8 +15,9 @@ from collections import defaultdict
 
 import frappe
 from frappe import _
-from frappe.utils import add_days, cstr, date_diff, flt, nowdate, strip_html
+from frappe.utils import add_days, date_diff, flt, nowdate
 
+from books_assistant.integration import check_document, lock_documents, resolve_scope
 from books_assistant.matching import bank_name, invoice_refs, mentions, vendor_key
 
 HIGH, CHECK, NONE = "high", "check", "none"
@@ -28,48 +29,38 @@ NOT_A_PARTY_NAME = {"INTUIT", "INTUIT INC.", "WISE", "WISE INC", "STRIPE", "PAYP
                     "508.DEV LLC", "508.DEV", "INTEREST"}
 
 
-@frappe.whitelist()
-def get_queue(bank_account=None):
-    frappe.only_for(APPROVERS)
-    context = Context()
-    return [context.suggest(bt) for bt in unreconciled_lines(bank_account)]
+@frappe.whitelist(methods=["GET"])
+def get_queue(bank_account=None, company=None):
+    from books_assistant.bank_api import get_queue as read_queue
+
+    return read_queue(bank_account, company)
 
 
-@frappe.whitelist()
-def approve(bank_transactions):
-    """Carry out the suggestion for each bank line. Each line is committed on its own, so one failure
-    doesn't undo the others."""
-    frappe.only_for(APPROVERS)
-    context, results = Context(), []
-    for name in frappe.parse_json(bank_transactions):
-        try:
-            bt = bank_line(name)
-            if not bt or flt(bt.unallocated_amount) <= 0.009:
-                results.append({"name": name, "ok": True, "message": _("Already reconciled")})
-                continue
-            suggestion = context.suggest(bt)
-            if suggestion["kind"] == NONE:
-                results.append({"name": name, "ok": False, "message": _("Nothing to approve")})
-                continue
-            message = execute(suggestion)
-            frappe.db.commit()
-            results.append({"name": name, "ok": True, "message": message})
-        except Exception as e:
-            frappe.db.rollback()
-            results.append({"name": name, "ok": False, "message": strip_html(cstr(e)).strip() or repr(e)})
-    return results
+@frappe.whitelist(methods=["POST"])
+def preview_approval(bank_transactions, expected_fingerprints, company=None, bank_account=None):
+    from books_assistant.bank_api import preview_approval as freeze
+
+    return freeze(bank_transactions, expected_fingerprints, company, bank_account)
+
+
+@frappe.whitelist(methods=["POST"])
+def approve(preview_id=None, request_id=None):
+    """Approve a frozen preview once. Request/result and bookings commit together."""
+    from books_assistant.bank_api import approve as execute_preview
+
+    return execute_preview(preview_id, request_id)
 
 
 def unreconciled_lines(bank_account=None):
     filters = {"docstatus": 1, "unallocated_amount": [">", 0.009]}
     if bank_account:
         filters["bank_account"] = bank_account
-    return frappe.get_all(
+    return frappe.get_list(
         "Bank Transaction",
         filters=filters,
         fields=["name", "date", "bank_account", "deposit", "withdrawal", "unallocated_amount", "description",
                 "party_type", "party", "currency"],
-        order_by="date desc, name desc",
+        order_by="date desc, name desc", limit_page_length=0,
     )
 
 
@@ -86,14 +77,19 @@ def bank_line(name):
 class Context:
     """What a queue run needs to know once: bank accounts, rules, parties, and entries already spoken for."""
 
-    def __init__(self):
+    def __init__(self, company=None):
+        self.scope = resolve_scope(company)
         self.bank_gl = dict(
-            frappe.get_all("Bank Account", filters={"is_company_account": 1}, fields=["name", "account"], as_list=True)
+            frappe.get_list("Bank Account", filters={"is_company_account": 1, "company": self.scope["company"]},
+                            fields=["name", "account"], as_list=True, limit_page_length=0)
         )
         self.rules = [
             frappe.get_doc("Bank Rule", name)
-            for name in frappe.get_all("Bank Rule", filters={"enabled": 1}, order_by="times_used desc", pluck="name")
+            for name in frappe.get_list("Bank Rule", filters={"enabled": 1}, order_by="times_used desc",
+                                        pluck="name", limit_page_length=0)
         ]
+        for rule in self.rules:
+            check_document("Account", rule.account, company=self.scope["company"], currency=self.scope["currency"])
         self.parties = {"Customer": self._parties("Customer", "customer_name"),
                         "Supplier": self._parties("Supplier", "supplier_name")}
         self.claimed = set()  # entries already suggested for another line in this run
@@ -101,7 +97,8 @@ class Context:
 
     def _parties(self, doctype, title_field):
         parties = {}
-        for row in frappe.get_all(doctype, filters={"disabled": 0}, fields=["name", title_field, "bank_names"]):
+        for row in frappe.get_list(doctype, filters={"disabled": 0}, fields=["name", title_field, "bank_names"],
+                                   limit_page_length=0):
             names = {row.name, row.get(title_field)}
             names |= {line.strip() for line in (row.bank_names or "").splitlines() if line.strip()}
             parties[row.name] = {n for n in names if n}
@@ -173,6 +170,9 @@ class Context:
             {**params, "doctype": "Journal Entry"},
             as_dict=True,
         )
+        if any(not frappe.has_permission(c.doctype, "read", c.name) for c in payments + journals):
+            return {"kind": NONE, "confidence": NONE,
+                    "summary": _("A possible matching entry is outside your access. Ask an accounting manager to review.")}
         candidates = [c for c in payments + journals if (c.doctype, c.name) not in self.claimed]
         if not candidates:
             return None
@@ -220,6 +220,9 @@ class Context:
         )
         if not rows:
             return None
+        if any(not frappe.has_permission("Payment Entry", "read", row.name) for row in rows):
+            return {"kind": NONE, "confidence": NONE,
+                    "summary": _("A possible matching entry is outside your access. Ask an accounting manager to review.")}
         pe = rows[0]
         return {
             "kind": NONE,
@@ -301,6 +304,9 @@ class Context:
                  "lo": add_days(bt.date, -TRANSFER_DAYS), "hi": add_days(bt.date, TRANSFER_DAYS)},
                 pluck=True,
             )
+            if any(not frappe.has_permission("Bank Transaction", "read", c) for c in candidates):
+                return {"kind": NONE, "confidence": NONE,
+                        "summary": _("A possible transfer is outside your access. Ask an accounting manager to review.")}
             candidates = [c for c in candidates if c not in self.pairs]
             if not candidates:
                 return None
@@ -449,6 +455,16 @@ def current_invoice(doctype, name):
         if not row:
             return None
         if row.docstatus == 1:
+            if not frappe.has_permission(doctype, "read", row.name):
+                frappe.throw(_("A named invoice is outside your access."), frappe.PermissionError)
+            scope = resolve_scope()
+            doc = check_document(doctype, row.name, company=scope["company"], currency=scope["currency"])
+            if doc.docstatus != 1:
+                return None
+            row.outstanding_amount = doc.outstanding_amount
+            row.party = doc.get("customer" if doctype == "Sales Invoice" else "supplier")
+            if doctype == "Purchase Invoice":
+                row.on_hold, row.client_invoice = doc.on_hold, doc.client_invoice
             return row
         name = frappe.db.get_value(doctype, {"amended_from": name, "docstatus": ["!=", 2]}, "name")
         if not name:
@@ -463,12 +479,25 @@ def party_fields(doctype):
 
 def outstanding_invoices(doctype, party):
     party_field = "customer" if doctype == "Sales Invoice" else "supplier"
-    return frappe.get_all(
+    scope = resolve_scope()
+    rows = frappe.get_list(
         doctype,
-        filters={party_field: party, "docstatus": 1, "outstanding_amount": [">", 0.009], "is_return": 0},
+        filters={party_field: party, "company": scope["company"], "docstatus": 1,
+                 "outstanding_amount": [">", 0.009], "is_return": 0},
         fields=["name", "outstanding_amount", "posting_date"] + party_fields(doctype),
-        order_by="posting_date, name",
+        order_by="posting_date, name", limit_page_length=0,
     )
+    current = []
+    for row in rows:
+        doc = check_document(doctype, row.name, company=scope["company"], currency=scope["currency"])
+        if doc.docstatus != 1 or doc.is_return or flt(doc.outstanding_amount) <= 0.009:
+            continue
+        row.outstanding_amount = doc.outstanding_amount
+        row.party = doc.get(party_field)
+        if doctype == "Purchase Invoice":
+            row.on_hold, row.client_invoice = doc.on_hold, doc.client_invoice
+        current.append(row)
+    return current
 
 
 def release_if_held(doctype, name, bank_transaction):
@@ -488,12 +517,19 @@ def fmt(amount):
 # -------------------------------------------------------------------- rules and bank names
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_rule(bank_transaction, keyword, account):
     """Make a rule from one bank line: its direction and the words to match, booked to the account."""
     frappe.only_for(APPROVERS)
-    bt = frappe.db.get_value("Bank Transaction", bank_transaction, ["deposit"], as_dict=True)
+    from books_assistant.bank_api import _check_line
+
+    scope = resolve_scope()
+    lock_documents([("Company", scope["company"])])
+    bt = _check_line(bank_transaction, scope)
+    check_document("Account", account, company=scope["company"], currency=scope["currency"])
     keyword = keyword.strip()
+    if not keyword:
+        frappe.throw(_("A rule keyword is required."))
     rule = frappe.get_doc({
         "doctype": "Bank Rule",
         "rule_name": unique_rule_name(keyword.title()),
@@ -511,11 +547,13 @@ def unique_rule_name(base):
     return name
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def learn_from_history():
     """Create rules from past bank lines booked by journal entry, and record how parties appear on bank
     statements from past matched payments. Existing rules and names are left alone."""
     frappe.only_for(APPROVERS)
+    scope = resolve_scope()
+    lock_documents([("Company", scope["company"])])
     return _("Created {0} rules: {1}. Added {2} bank names for {3} parties.").format(*_learn_rules(), *_learn_bank_names())
 
 
@@ -523,7 +561,7 @@ def _learn_rules():
     company_banks = set(frappe.get_all("Bank Account", filters={"is_company_account": 1}, pluck="account"))
     rows = frappe.db.sql(
         """
-        select bt.description, bt.deposit, ba.account own_account, btp.payment_entry journal
+        select bt.name bank_transaction, bt.description, bt.deposit, ba.account own_account, btp.payment_entry journal
         from `tabBank Transaction` bt
         join `tabBank Account` ba on ba.name = bt.bank_account
         join `tabBank Transaction Payments` btp on btp.parent = bt.name and btp.payment_document = 'Journal Entry'
@@ -533,11 +571,14 @@ def _learn_rules():
     )
     seen = defaultdict(lambda: defaultdict(int))
     for row in rows:
+        check_document("Bank Transaction", row.bank_transaction)
+        check_document("Journal Entry", row.journal)
         accounts = set(frappe.get_all("Journal Entry Account", filters={"parent": row.journal}, pluck="account"))
         accounts.discard(row.own_account)
         if len(accounts) != 1:
             continue
         account = accounts.pop()
+        check_document("Account", account)
         account_type = frappe.get_cached_value("Account", account, "account_type")
         if account_type in ("Cash", "Receivable", "Payable") or (account_type == "Bank" and account not in company_banks):
             continue
@@ -567,7 +608,7 @@ def _learn_rules():
 def _learn_bank_names():
     rows = frappe.db.sql(
         """
-        select bt.description, pe.party_type, pe.party from `tabBank Transaction` bt
+        select bt.name bank_transaction, pe.name payment, bt.description, pe.party_type, pe.party from `tabBank Transaction` bt
         join `tabBank Transaction Payments` btp on btp.parent = bt.name and btp.payment_document = 'Payment Entry'
         join `tabPayment Entry` pe on pe.name = btp.payment_entry
         where bt.docstatus = 1 and pe.docstatus = 1 and pe.party_type in ('Customer', 'Supplier')
@@ -577,6 +618,9 @@ def _learn_bank_names():
     context = Context()
     owners = defaultdict(set)
     for row in rows:
+        check_document("Bank Transaction", row.bank_transaction)
+        check_document("Payment Entry", row.payment)
+        check_document(row.party_type, row.party)
         name = bank_name(row.description)
         if not name or name.upper() in NOT_A_PARTY_NAME:
             continue
@@ -591,8 +635,9 @@ def _learn_bank_names():
         party_type, party, name = next(iter(entries))
         added[(party_type, party)].append(name)
     for (party_type, party), names in added.items():
+        check_document(party_type, party, permission="write")
         current = frappe.db.get_value(party_type, party, "bank_names") or ""
-        lines = [l for l in current.splitlines() if l.strip()]
-        lines += [n for n in names if n.casefold() not in {l.casefold() for l in lines}]
+        lines = [line for line in current.splitlines() if line.strip()]
+        lines += [n for n in names if n.casefold() not in {line.casefold() for line in lines}]
         frappe.db.set_value(party_type, party, "bank_names", "\n".join(lines))
     return sum(len(n) for n in added.values()), len(added)

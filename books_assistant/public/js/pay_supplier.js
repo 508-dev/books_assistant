@@ -15,10 +15,10 @@ books_assistant.fronting_html = fronting;
 // Shows what a supplier is owed, with any earlier credit, then applies the credit and opens a draft payment.
 books_assistant.pay_supplier = function (supplier, invoices) {
 	frappe
-		.call({ method: "books_assistant.pay_supplier.preview", args: { supplier, invoices: invoices || null } })
+		.call({ method: "books_assistant.pay_supplier.preview", type: "GET", args: { supplier, invoices: invoices === undefined ? null : invoices, all_eligible: invoices === undefined } })
 		.then(({ message: p }) => {
 			const esc = frappe.utils.escape_html;
-			const money = (v) => format_currency(v, "USD");
+			const money = (v) => format_currency(v, p.currency);
 			const link = (doctype, name) =>
 				`<a href="/app/${frappe.router.slug(doctype)}/${encodeURIComponent(name)}">${esc(name)}</a>`;
 			const held = p.held.length
@@ -77,29 +77,33 @@ books_assistant.pay_supplier = function (supplier, invoices) {
 					},
 				],
 				primary_action_label: p.to_pay > 0 ? __("Prepare payment") : __("Apply credit"),
-				primary_action: (values) =>
-					frappe
-						.call({
+				primary_action: (values) => frappe.call({
+					method: "books_assistant.pay_supplier.preview_preparation",
+					args: { supplier, invoices: p.bills.map((b) => b.name), company: p.company, bank_account: values.bank_account },
+					freeze: true,
+				}).then(({ message: frozen }) => {
+					const reviewed = frozen.snapshot;
+					const request_id = crypto.randomUUID();
+					const documents = reviewed.bills.map((b) => esc(b.name)).join(", ");
+					frappe.confirm(
+						__("Apply {0} of credit to {1}, then prepare an unsaved payment for {2} from {3}? This records credit allocations; no bank transfer is made.", [
+							money(reviewed.credit_to_apply), documents, money(reviewed.to_pay), esc(reviewed.bank_account),
+						]),
+						() => frappe.call({
 							method: "books_assistant.pay_supplier.prepare",
-							args: { supplier, invoices: invoices || null, bank_account: values.bank_account },
-							freeze: true,
-						})
-						.then(({ message }) => {
+							args: { preview_id: frozen.preview_id, request_id }, freeze: true,
+						}).then(({ message }) => {
 							dialog.hide();
 							if (message.payment_entry) {
 								const payment = frappe.model.sync(message.payment_entry)[0];
 								frappe.set_route("Form", payment.doctype, payment.name);
-								frappe.show_alert({
-									message: __("Check the payment, then save and submit."),
-									indicator: "blue",
-								});
+								frappe.show_alert({ message: __("Check the payment, then save and submit."), indicator: "blue" });
 							} else {
-								frappe.show_alert({
-									message: __("Applied {0} of credit; nothing left to pay.", [money(message.credit_applied)]),
-									indicator: "green",
-								});
+								frappe.show_alert({ message: __("Applied {0} of credit; nothing left to pay.", [money(message.credit_applied)]), indicator: "green" });
 							}
-						}),
+						})
+					);
+				}),
 			});
 			dialog.show();
 		});
