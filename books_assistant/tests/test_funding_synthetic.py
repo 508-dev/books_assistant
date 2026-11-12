@@ -157,6 +157,18 @@ class TestFundingSynthetic(unittest.TestCase):
             frappe.db.exists("API Request", {"preview": frozen["preview_id"]})
         )
 
+    def test_bank_metadata_change_requires_new_review(self):
+        _bill, payment = self.payout(100)
+        self.snapshot(1000)
+        report = funding.check_payment(payment.name)
+        bank = frappe.get_doc("Bank Account", self.fixture["bank_account"])
+        bank.db_set("bank_account_no", "SYNTHETIC-CHANGED")
+        with self.assertRaises(frappe.ValidationError):
+            funding.approve(payment.name, report["review_token"])
+        self.assertFalse(
+            frappe.db.exists("Payout Reservation", {"payment_entry": payment.name})
+        )
+
     def test_fronting_reason_required_for_unpaid_exact_client_invoice(self):
         bill, payment = self.payout(100)
         sales = self.invoice("Sales Invoice", 200, submitted=True)
@@ -395,6 +407,54 @@ class TestFundingSynthetic(unittest.TestCase):
             ),
             2,
         )
+
+    def test_inaccessible_linked_client_fails_closed_even_for_finance_manager(self):
+        bill, payment = self.payout(100)
+        sales = self.invoice("Sales Invoice", 200, submitted=True)
+        bill.db_set("client_invoice", sales.name)
+        self.snapshot(1000)
+        other = frappe.copy_doc(frappe.get_doc("Customer", self.fixture["customer"]))
+        other.customer_name = f"Other synthetic client {uuid.uuid4().hex[:8]}"
+        other.insert()
+        user = frappe.get_doc(
+            {
+                "doctype": "User",
+                "email": f"restricted-{uuid.uuid4()}@example.test",
+                "first_name": "Restricted finance",
+                "send_welcome_email": 0,
+                "roles": [{"role": "Accounts Manager"}],
+            }
+        ).insert(ignore_permissions=True)
+        frappe.get_doc(
+            {
+                "doctype": "User Permission",
+                "user": user.name,
+                "allow": "Customer",
+                "for_value": other.name,
+                "apply_to_all_doctypes": 1,
+            }
+        ).insert()
+        frappe.set_user(user.name)
+        previous = frappe.flags.in_test
+        frappe.flags.in_test = False
+        try:
+            self.assertTrue(frappe.has_permission("Purchase Invoice", "read", doc=bill))
+            self.assertFalse(frappe.has_permission("Sales Invoice", "read", doc=sales))
+            with self.assertRaises(frappe.PermissionError):
+                funding.check_payment(payment.name)
+            with self.assertRaises(frappe.PermissionError):
+                pay_supplier.preview_preparation(
+                    self.fixture["supplier"],
+                    [bill.name],
+                    company=self.company,
+                    bank_account=self.fixture["bank_gl"],
+                )
+            self.assertFalse(
+                frappe.db.exists("Payout Reservation", {"payment_entry": payment.name})
+            )
+        finally:
+            frappe.flags.in_test = previous
+            frappe.set_user("Administrator")
 
     def test_snapshot_is_immutable_and_future_or_duplicate_evidence_fails(self):
         snapshot = self.snapshot(1000)

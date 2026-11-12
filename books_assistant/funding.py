@@ -11,6 +11,7 @@ from frappe import _
 from frappe.utils import now_datetime
 
 from books_assistant.funding_policy import cash_check, fingerprint, money
+from books_assistant.integration import lock_documents
 
 APPROVERS = ("Accounts Manager", "System Manager")
 RESERVED = ("Active", "Invalid")
@@ -22,11 +23,11 @@ def permitted(doctype, name, permission="read", current=False):
     return doc
 
 
-def bank_details(bank_account):
-    bank = permitted("Bank Account", bank_account)
+def bank_details(bank_account, current=False):
+    bank = permitted("Bank Account", bank_account, current=current)
     if not bank.is_company_account or not bank.account:
         frappe.throw(_("Choose a company bank account linked to a ledger account."))
-    account = permitted("Account", bank.account)
+    account = permitted("Account", bank.account, current=current)
     permitted("Company", account.company)
     from books_assistant.integration import resolve_scope
 
@@ -40,10 +41,12 @@ def bank_details(bank_account):
 
 def lock_bank(bank_account):
     bank, account = bank_details(bank_account)
-    frappe.db.sql("select name from `tabCompany` where name = %s for update", account.company)
-    frappe.db.sql("select name from `tabAccount` where name = %s for update", account.name)
-    frappe.db.sql("select name from `tabBank Account` where name = %s for update", bank.name)
-    return bank, account
+    lock_documents([("Company", account.company)])
+    lock_documents([("Account", account.name), ("Bank Account", bank.name)])
+    current_bank = permitted("Bank Account", bank.name, current=True)
+    if current_bank.account != account.name or current_bank.company != account.company:
+        frappe.throw(_("The bank ledger mapping changed. Review funding again."))
+    return bank_details(bank.name, current=True)
 
 
 def latest_snapshot(bank_account):
@@ -188,6 +191,7 @@ def assess(bank_account, amount, bill_names, supplier=None, exclude_payment=None
     if currency != frappe.get_cached_value("Company", account.company, "default_currency"):
         issues.append("unsupported_currency")
     report = {"version": 1, "bank_account": bank.name, "company": account.company, "currency": currency,
+              "bank_ledger": account.name, "bank_version": str(bank.modified), "account_version": str(account.modified),
               "cash": cash, "clients": clients, "issues": issues,
               "fronting_required": any(c["status"] != "received" for c in clients),
               "can_approve": cash["status"] == "sufficient" and not issues,
@@ -269,7 +273,7 @@ def approve(payment_entry, review_token, fronting_reason=None):
     frappe.only_for(APPROVERS)
     doc = permitted("Payment Entry", payment_entry, "write")
     company = doc.company
-    frappe.db.sql("select name from `tabCompany` where name = %s for update", company)
+    lock_documents([("Company", company)])
     doc = permitted("Payment Entry", payment_entry, "write", current=True)
     if doc.company != company:
         frappe.throw(_("Payment company changed. Review funding again."))

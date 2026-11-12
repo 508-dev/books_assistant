@@ -239,6 +239,8 @@ correctness; the Bench tests need a real Frappe/ERPNext installation.
 
 Before sending money, an Accounts Manager or System Manager can use **Review payout funding** on a saved draft supplier Payment Entry. The supplier payout dialog also shows the funding check when its bank account changes. Its frozen preparation preview includes the funding assessment, so changes to bank evidence or reservations require a new review before credit reconciliation. Preparing a draft does not approve a transfer.
 
+If an explicitly linked client invoice is missing or inaccessible to the ERP actor, the funding check and supplier draft preparation fail closed. A fronting reason cannot bypass source-document permissions; an authorized accounting user must correct the link or access first.
+
 The check separates two questions:
 
 - **Client receipt:** engineering/project bills use the exact **Paid After Client Pays** invoice link, or the invoices linked through all associated timesheets, including grouped bills linked by `Timesheet.purchase_invoice`. An outstanding invoice warns that the co-op is fronting payment. A paid invoice counts as verified client funding only with a submitted customer receipt fully matched to incoming bank transactions. Missing links, credit-note-only settlements, and unsupported currencies remain unverified. Project/date guesses and a manually entered clearance date cannot establish receipt.
