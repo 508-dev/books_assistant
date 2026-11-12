@@ -354,7 +354,8 @@ def run_real_tests(include_api=False, include_funding=False, include_health=Fals
     if include_api:
         modules += ["books_assistant.tests.test_billing_api", "books_assistant.tests.test_integration_transactions",
                     "books_assistant.tests.test_finance_synthetic", "books_assistant.tests.test_bank_discovery_transactions",
-                    "books_assistant.tests.test_bank_supplier_permissions", "books_assistant.tests.test_read_api_permissions"]
+                    "books_assistant.tests.test_bank_supplier_permissions", "books_assistant.tests.test_read_api_permissions",
+                    "books_assistant.tests.test_snapshot_field_permissions"]
     if include_funding:
         modules.append("books_assistant.tests.test_funding_synthetic")
     if include_health:

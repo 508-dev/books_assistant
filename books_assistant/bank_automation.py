@@ -405,6 +405,8 @@ def _run(company=None, *, scheduled=False):
                 frappe.flags.bank_auto_booking = old_flag
             results.append({"bank_transaction": name, "code": "BOOKED", "rule": rule.name,
                             "journal_entry": journal, "message": message})
+        except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+            raise
         except Exception:
             frappe.db.rollback(save_point=savepoint)
             frappe.log_error(title=f"Bank automatic booking failed: {name}")

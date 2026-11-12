@@ -29,6 +29,8 @@ class TestAutomaticBookingGuards(unittest.TestCase):
         frappe.whitelist = lambda **kwargs: lambda fn: fn
         frappe.only_for = Mock()
         frappe.throw = Mock(side_effect=ValueError)
+        frappe.QueryDeadlockError = type("QueryDeadlockError", (Exception,), {})
+        frappe.QueryTimeoutError = type("QueryTimeoutError", (Exception,), {})
         frappe.session = SimpleNamespace(user="finance@example.test")
         frappe.set_user = Mock(side_effect=lambda user: setattr(frappe.session, "user", user))
         frappe.db = SimpleNamespace(get_value=Mock(return_value=1))

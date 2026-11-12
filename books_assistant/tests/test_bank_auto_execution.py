@@ -92,6 +92,25 @@ class TestBankAutomaticBookingRuntime(unittest.TestCase):
         self.assertEqual(result["results"][0]["journal_entry"], "JE-AUTO")
         self.auto.record_rule_booking.assert_called_once_with("BT-NEXT", "GitHub", "JE-AUTO", automatic=True)
         self.assertEqual(self.codes(self.auto._run("Co-op")), ["NOT_UNRECONCILED"])
+
+    def test_database_transients_escape_without_savepoint_recovery_or_progress(self):
+        self.frappe.get_list.side_effect = lambda dt, **kw: ["Operating Bank"] if dt == "Bank Account" else ["BT-NEXT", "BT-LATER"]
+        for error_type in (self.frappe.QueryDeadlockError, self.frappe.QueryTimeoutError):
+            with self.subTest(error=error_type.__name__):
+                original = error_type("transaction must retry")
+                self.review.execute.reset_mock(side_effect=True)
+                self.review.execute.side_effect = original
+                self.frappe.db.savepoint.reset_mock()
+                with self.assertRaises(error_type) as caught:
+                    self.auto.run("Co-op")
+                self.assertIs(caught.exception, original)
+                self.review.execute.assert_called_once()
+                self.frappe.db.savepoint.assert_called_once_with("bank_auto_0")
+                self.frappe.db.rollback.assert_not_called()
+                self.auto.record_rule_booking.assert_not_called()
+                self.frappe.db.set_single_value.assert_not_called()
+                self.frappe.log_error.assert_not_called()
+                self.assertFalse(self.frappe.flags.bank_auto_booking)
         self.review.execute.assert_called_once()
         self.assertFalse(self.frappe.flags.bank_auto_booking)
 
