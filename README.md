@@ -83,7 +83,7 @@ When a **Billing Approver** submits a client invoice, it's emailed with its PDF 
 
 Both fields take several addresses, separated by commas or new lines.
 
-**PDF layout:** the customer's **Invoice Print Format** if set. Otherwise the timesheet layout when the invoice has timesheet hours, otherwise the default. Both defaults are chosen in Automation Settings.
+**PDF layout:** the customer's **Invoice Print Format** if set. Otherwise the timesheet layout when the invoice has timesheet hours, otherwise the default. Both defaults are chosen in Automation Settings. New installations use ERPNext's standard layout until a format is configured; upgrades preserve existing selections and intentional blanks.
 
 A failed email never stops the invoice being submitted: it's noted on the invoice and listed in Automation Settings.
 
@@ -123,6 +123,10 @@ bench --site <site> run-tests --app books_assistant
 ```
 
 The matching tests are self-contained. The others run against the site's own data (use a copy of production), with made-up customers and addresses where they need them, and roll back everything they create. No email is sent.
+
+For a test path that requires no production export, see
+[Synthetic ERP verification](books_assistant/tests/README.md). It includes a real
+old-to-new migration, repeat migration, and guarded accounting/concurrency suites.
 
 ## License
 

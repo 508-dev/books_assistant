@@ -268,6 +268,41 @@ class BillingContractTests(unittest.TestCase):
         self.assertTrue(settings.hold_engineer_bills)
         self.assertIn("for update", self.frappe.db.sql.call_args.args[0])
 
+    def test_invoice_layout_defaults_do_not_require_site_specific_print_formats(self):
+        schema = json.loads(
+            (
+                ROOT
+                / "books_assistant/books_assistant/doctype/automation_settings/automation_settings.json"
+            ).read_text()
+        )
+        fields = {field["fieldname"]: field for field in schema["fields"]}
+        for name in ("invoice_print_format", "timesheet_print_format"):
+            self.assertEqual(fields[name]["options"], "Print Format")
+            self.assertFalse(
+                fields[name].get("default"),
+                "A new site cannot link to a site-specific print format",
+            )
+
+    def test_blank_invoice_layouts_fall_back_without_overriding_configured_choices(
+        self,
+    ):
+        email = load_module(
+            "isolated_invoice_email", "books_assistant/invoice_email.py", self.modules
+        )
+        settings = Document(invoice_print_format=None, timesheet_print_format=None)
+        email.settings = Mock(return_value=settings)
+        self.frappe.db.get_value.return_value = None
+        invoice = Document(customer="C-1", timesheets=[Row(billing_hours=1)])
+        self.assertIsNone(email.print_format(invoice))
+        self.assertIsNone(settings.invoice_print_format)
+        self.assertIsNone(settings.timesheet_print_format)
+        settings.invoice_print_format = "Configured standard invoice"
+        self.assertEqual(email.print_format(invoice), "Configured standard invoice")
+        settings.timesheet_print_format = "Configured timesheet invoice"
+        self.assertEqual(email.print_format(invoice), "Configured timesheet invoice")
+        self.frappe.db.get_value.return_value = "Customer-specific invoice"
+        self.assertEqual(email.print_format(invoice), "Customer-specific invoice")
+
     def test_locked_contact_fallback_checks_permission_before_disclosing_email(self):
         email = load_module(
             "isolated_invoice_email", "books_assistant/invoice_email.py", self.modules
