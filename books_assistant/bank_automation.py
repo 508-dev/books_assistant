@@ -2,6 +2,7 @@
 
 import json
 import math
+from collections import Counter
 
 import frappe
 from frappe import _
@@ -254,9 +255,17 @@ def _run(company=None, *, scheduled=False):
                             pluck="name", limit_page_length=0)
     if not banks:
         return {"code": "NO_BANKS", **learned, "results": results}
-    names = frappe.get_list("Bank Transaction", filters={"docstatus": 1, "bank_account": ["in", banks],
-                            "currency": scope["currency"], "unallocated_amount": [">", 0.009], "date": ["<=", today()]}, pluck="name",
-                            order_by="date, name", limit_page_length=MAX_LINES_PER_RUN)
+    filters = {"docstatus": 1, "bank_account": ["in", banks], "currency": scope["currency"],
+               "unallocated_amount": [">", 0.009], "date": ["<=", today()]}
+    cursor = settings.get("bank_auto_scan_after")
+    if cursor:
+        filters["name"] = [">", cursor]
+    names = frappe.get_list("Bank Transaction", filters=filters, pluck="name", order_by="name",
+                            limit_page_length=MAX_LINES_PER_RUN)
+    if not names and cursor:
+        filters.pop("name")
+        names = frappe.get_list("Bank Transaction", filters=filters, pluck="name", order_by="name",
+                                limit_page_length=MAX_LINES_PER_RUN)
     for index, name in enumerate(names):
         current_settings = _settings()
         if not current_settings.get("bank_auto_book_enabled"):
@@ -285,6 +294,9 @@ def _run(company=None, *, scheduled=False):
             context = br.Context()  # Each candidate gets fresh claim/transfer state.
             context.rules = _current_rules()
             matching = [r for r in context.rules if overlaps(r, bt)]
+            if not matching:
+                results.append({"bank_transaction": name, "code": "NO_MATCHING_RULE"})
+                continue
             if len({r.account for r in matching}) != 1:
                 results.append({"bank_transaction": name, "code": "AMBIGUOUS_RULE"})
                 continue
@@ -348,14 +360,31 @@ def _run(company=None, *, scheduled=False):
             frappe.db.rollback(save_point=savepoint)
             frappe.log_error(title=f"Bank automatic booking failed: {name}")
             results.append({"bank_transaction": name, "code": "EXECUTION_FAILED"})
+    if results:
+        # Persist progress even for lines needing review, so they cannot starve
+        # later eligible transactions. The settings row lock serializes runs.
+        frappe.db.set_single_value("Automation Settings", "bank_auto_scan_after", results[-1]["bank_transaction"])
     return {"code": "COMPLETED", **learned, "results": results}
+
+
+def _report(result):
+    """Persist a bounded, aggregate operator summary without exposing record IDs."""
+    if result["code"] != "DISABLED":
+        decisions = Counter(row["code"] for row in result.get("results", []))
+        summary = {"contract_version": 1, "action_id": "bank.auto.run", "code": result["code"],
+                   "processed": sum(decisions.values()), "decisions": dict(decisions),
+                   "rules_created": len(result.get("rules_created", [])),
+                   "rules_updated": len(result.get("rules_updated", []))}
+        frappe.db.set_single_value("Automation Settings", "bank_auto_last_run_on", now_datetime())
+        frappe.db.set_single_value("Automation Settings", "bank_auto_last_summary", json.dumps(summary, sort_keys=True))
+    return result
 
 
 @frappe.whitelist(methods=["POST"])
 def run(company=None):
     """Manual runs retain the authenticated caller's identity and permissions."""
     frappe.only_for(APPROVERS)
-    return _run(company)
+    return _report(_run(company))
 
 
 def run_scheduled():
@@ -366,6 +395,6 @@ def run_scheduled():
     user = _configured_user(settings)
     try:
         frappe.set_user(user)
-        return _run(scheduled=True)
+        return _report(_run(scheduled=True))
     finally:
         frappe.set_user(original_user)
