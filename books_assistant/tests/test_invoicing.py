@@ -178,3 +178,35 @@ class TestHoldsAndRun(unittest.TestCase):
         frappe.get_single("Automation Settings").db_set("auto_release_holds", 1)
         holds.release_paid_holds()
         self.assertEqual(frappe.db.get_value("Purchase Invoice", bill[0], "on_hold"), 0)
+
+
+class TestNeverBlocks(unittest.TestCase):
+    """Problems in this app must never stop an invoice or payment being submitted, nor fail an install."""
+
+    def setUp(self):
+        frappe.set_user("Administrator")
+
+    def tearDown(self):
+        frappe.db.rollback()
+
+    def test_invoice_submits_when_settings_are_unreadable(self):
+        si = invoice(customer(invoice_to="ap@example.com"))
+        with patch.object(ie, "settings", side_effect=ImportError("Module import failed for Automation Settings")), \
+                patch("frappe.get_roles", return_value=["Billing Approver"]):
+            ie.on_submit(si, "on_submit")
+        self.assertTrue(frappe.db.exists("Comment", {"reference_name": si.name, "content": ["like", "Not emailed%"]}))
+
+    def test_payment_submits_when_releasing_fails(self):
+        pe = frappe._dict(doctype="Payment Entry", name="TEST-PAY")
+        with patch.object(holds, "release_paid_holds", side_effect=ImportError("Automation Settings missing")):
+            holds.release_after_payment(pe)
+        self.assertTrue(frappe.db.exists("Error Log", {"method": "Releasing held bills failed", "reference_name": "TEST-PAY"}))
+
+    def test_settings_wait_for_their_doctype(self):
+        from books_assistant import setup
+
+        real_exists = frappe.db.exists
+        with patch.object(frappe.db, "exists", side_effect=lambda dt, *a, **k: False if (dt, a[:1]) == (
+                "DocType", ("Automation Settings",)) else real_exists(dt, *a, **k)), \
+                patch("frappe.get_single", side_effect=AssertionError("must not open the settings")):
+            setup.initialise_settings()
