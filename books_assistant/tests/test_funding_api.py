@@ -217,7 +217,7 @@ class TestFundingAPI(unittest.TestCase):
         snapshot.reflected_reservations = [Row(reservation="RES-1")]
         reservation = Row(bank_account="Novo", status="Active", payment_entry="PE-1", amount=6000,
                           creation=datetime(2026, 11, 13, 10))
-        payment = Row(docstatus=0, paid_from="Bank - 508", paid_amount=6000)
+        payment = Row(docstatus=0, paid_from="Bank - 508", paid_amount=6000, company="508", paid_from_account_currency="USD", modified=datetime(2026, 11, 13, 10, 30))
         module.permitted.side_effect = lambda doctype, name, **kwargs: reservation if doctype == "Payout Reservation" else payment
         with patch.object(module, "latest_snapshot", return_value=None):
             with self.assertRaises(Rejected):

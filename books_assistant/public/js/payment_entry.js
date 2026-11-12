@@ -12,6 +12,10 @@ books_assistant.show_fronting = frappe.utils.debounce(async function (frm) {
 		frm.set_intro(__("An Accounts Manager must review payout funding before money is sent."), "orange");
 		return;
 	}
+	if (!frm.is_new() && frm.is_dirty()) {
+		frm.set_intro(__("Save changes to refresh the funding check. Existing payout reservations remain held."), "orange");
+		return;
+	}
 	frm.set_intro(__("Funding unverified: checking…"), "orange");
 	try {
 		let report;

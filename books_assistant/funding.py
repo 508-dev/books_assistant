@@ -94,9 +94,25 @@ def payment_signature(doc):
 def client_funding(bill, company, currency):
     """Exact links only; absent links or non-cash offsets cannot establish client cash receipt."""
     names = {bill.get("client_invoice")} if bill.get("client_invoice") else set()
-    if not names and bill.get("timesheet"):
-        names.update(frappe.get_all("Timesheet Detail", filters={"parent": bill.timesheet,
-                     "sales_invoice": ["is", "set"]}, pluck="sales_invoice", distinct=True))
+    if not names:
+        timesheets = {bill.timesheet} if bill.get("timesheet") else set()
+        timesheets.update(row.name for row in frappe.db.sql(
+            "select name from `tabTimesheet` where purchase_invoice = %s order by name for update",
+            bill.name, as_dict=True,
+        ))
+        incomplete = False
+        for name in sorted(timesheets):
+            timesheet = permitted("Timesheet", name, current=True)
+            if timesheet.company != company:
+                frappe.throw(_("A linked timesheet belongs to another company."))
+            logs = timesheet.get("time_logs") or []
+            links = {row.sales_invoice for row in logs if row.get("sales_invoice")}
+            incomplete = incomplete or not links or any(
+                row.get("is_billable") and not row.get("sales_invoice") for row in logs
+            )
+            names.update(links)
+        if incomplete:
+            return {"bill": bill.name, "status": "unverified", "reason": "missing_client_invoice"}
     if not names:
         return {"bill": bill.name, "status": "unverified", "reason": "missing_client_invoice"}
     invoices = []

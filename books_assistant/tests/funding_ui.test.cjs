@@ -104,3 +104,16 @@ test("an unsaved payment cannot be approved", async () => {
 	await ctx.books_assistant.review_funding({is_new: () => true});
 	assert.match(notice, /Save the payment/);
 });
+
+
+test("dirty saved payment does not double-count its existing reservation", async () => {
+    const ctx = context();
+    let notice;
+    ctx.frappe.call = () => assert.fail("dirty saved payments must not calculate a second payout");
+    const frm = {doc: {name: "PE-1", docstatus: 0, payment_type: "Pay", party_type: "Supplier", references: [{reference_doctype: "Purchase Invoice", reference_name: "PI-1"}]},
+        is_new: () => false, is_dirty: () => true, set_intro: (text) => {notice = text;}};
+    await ctx.books_assistant.show_fronting(frm);
+    assert.match(notice, /Save changes to refresh/);
+    assert.match(notice, /reservations remain held/);
+    assert.doesNotMatch(notice, /shortfall|blocked/);
+});

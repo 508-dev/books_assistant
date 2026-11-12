@@ -5,7 +5,9 @@
  "engine": "InnoDB",
  "autoname": "hash",
  "field_order": [
-  "reservation"
+  "reservation",
+  "resolution",
+  "resolution_reason"
  ],
  "fields": [
   {
@@ -15,6 +17,21 @@
    "options": "Payout Reservation",
    "reqd": 1,
    "in_list_view": 1
+  },
+  {
+   "fieldname": "resolution",
+   "fieldtype": "Select",
+   "label": "Resolution",
+   "options": "Reflected\nNot sent from this bank",
+   "default": "Reflected",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "resolution_reason",
+   "fieldtype": "Small Text",
+   "label": "Reason for Changed Payout",
+   "description": "Required when resolving an invalid reservation after the amount or bank changed. Confirm the actual transfer is included, or that no transfer was sent from the original bank."
   }
  ],
  "permissions": [],

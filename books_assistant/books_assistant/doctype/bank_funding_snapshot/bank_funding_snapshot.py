@@ -38,15 +38,31 @@ class BankFundingSnapshot(Document):
             record = permitted("Payout Reservation", row.reservation, current=True)
             if record.bank_account != bank.name or record.status not in ("Active", "Invalid"):
                 frappe.throw("Only active reservations for this bank can be reflected.")
-            if payment.docstatus != 1 or checked < get_datetime(record.creation):
+            if (payment.docstatus != 1 or checked < get_datetime(record.creation)
+                    or checked < get_datetime(payment.modified)):
                 frappe.throw("Record the sent payment before confirming it is reflected in a newer balance.")
-            if payment.paid_from != account.name or money(payment.paid_amount) != money(record.amount):
-                frappe.throw("The recorded payment must match the reserved bank and amount.")
+            resolution = row.get("resolution") or "Reflected"
+            changed = payment.paid_from != account.name or money(payment.paid_amount) != money(record.amount)
+            if resolution == "Not sent from this bank":
+                if record.status != "Invalid" or payment.paid_from == account.name:
+                    frappe.throw("Only an invalid reservation for a payout recorded against another bank can be resolved as not sent.")
+                if not (row.get("resolution_reason") or "").strip():
+                    frappe.throw("Confirm with a reason that no transfer was sent from this bank.")
+            elif resolution == "Reflected":
+                if payment.paid_from != account.name:
+                    frappe.throw("Use Not sent from this bank when the recorded payout uses a different bank.")
+                if changed and (record.status != "Invalid" or not (row.get("resolution_reason") or "").strip()):
+                    frappe.throw("Record a reason confirming the changed payout amount is included in this balance.")
+            else:
+                frappe.throw("Choose a supported reservation resolution.")
+            if payment.company != account.company or payment.paid_from_account_currency != self.currency:
+                frappe.throw("The recorded payout must use this company's currency.")
 
     def after_insert(self):
         for row in self.reflected_reservations or []:
-            resolve(frappe.get_doc("Payout Reservation", row.reservation), "Reflected",
-                    f"Confirmed deducted in bank snapshot {self.name}: {self.notes}")
+            status = "Released" if row.get("resolution") == "Not sent from this bank" else "Reflected"
+            resolve(frappe.get_doc("Payout Reservation", row.reservation), status,
+                    f"Resolved with bank snapshot {self.name}: {row.get('resolution_reason') or self.notes}")
 
     def on_trash(self):
         frappe.throw("Bank balance snapshots are audit records and cannot be deleted.")
