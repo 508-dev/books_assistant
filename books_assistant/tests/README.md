@@ -112,3 +112,47 @@ layout), while upgrading an existing site's saved choices preserves them.
 Synthetic tests cover controlled cases. A sanitized production clone can add
 historical data-shape coverage later, but is not required for these migrations
 or transaction checks.
+
+
+## Funding module database verification
+
+On an explicitly enabled disposable site, run the funding-specific strict runner:
+
+```sh
+bench --site <test-site> execute books_assistant.tests.test_funding_synthetic.run_tests
+```
+
+This suite uses real submitted invoices, bank-matched customer receipts, ERP
+Payment Entries and committed worker connections. It covers missing/stale
+balances, cash shortfalls, required fronting reasons, grouped-timesheet receipt
+links, stale preparation previews, idempotent approval, explicit unsent release,
+normal reflection without double subtraction, and recovery of submitted payouts
+whose amount or bank changed. Role assertions temporarily disable Frappe's
+`in_test` bypass; generic reservation edits remain forbidden. Two independent
+REPEATABLE READ connections establish snapshots before competing to reserve the
+same cash, or retrying the same approval. The runner fails on any error or skip.
+
+For the funding schema upgrade, install actual pre-funding source `90bd30d` on a
+separate site, copy only `funding_migration.py` into its tests directory, enable
+synthetic fixtures and run:
+
+```sh
+bench --site <upgrade-site> execute books_assistant.tests.funding_migration.seed_before_funding
+```
+
+Replace the source with the funding version, then run:
+
+```sh
+bench --site <upgrade-site> migrate
+bench --site <upgrade-site> execute books_assistant.tests.funding_migration.assert_after_funding
+bench --site <upgrade-site> execute books_assistant.tests.funding_migration.prepare_repeat
+bench --site <upgrade-site> migrate
+bench --site <upgrade-site> execute books_assistant.tests.funding_migration.assert_after_funding
+```
+
+The helper requires absent funding DocTypes on the old site, seeds three actual
+accounting documents and four GL entries, and compares complete document and
+ledger snapshots afterward (including IDs, links and timestamps). It verifies
+new funding tables/fields and default freshness, then confirms a deliberate
+freshness override survives repeated migration. Do not substitute a production
+site or drop an existing funding schema to imitate an upgrade.

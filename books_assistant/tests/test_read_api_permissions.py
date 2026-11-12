@@ -45,13 +45,20 @@ class TestReadFinancePermissions(unittest.TestCase):
         return user.name
 
     def test_system_manager_can_read_available_sections_without_bank_permission(self):
+        from books_assistant.books_assistant.doctype.billing_run.billing_run import editing_run
+        from frappe.utils import today
+
+        with editing_run():
+            run = frappe.get_doc({"doctype": "Billing Run", "company": self.fixture["company"],
+                "currency": "USD", "period_start": today(), "period_end": today(),
+                "invoice_date": today(), "status": "Prepared"}).insert()
         user = self.user(["System Manager"])
         frappe.set_user(user)
         self.assertFalse(frappe.has_permission("Bank Account", "read"))
         result = api.get_finance_status(self.fixture["company"])
         self.assertIn("Bank Account", result["unavailable_sources"])
         self.assertEqual(result["unmatched_bank_lines"], [])
-        self.assertTrue(result["pending_billing_runs"])
+        self.assertIn(run.name, {row["name"] for row in result["pending_billing_runs"]})
 
     def test_settings_initializer_preserves_saved_disabled_switches(self):
         from books_assistant import setup

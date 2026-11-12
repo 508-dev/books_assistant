@@ -11,6 +11,7 @@ import frappe
 from frappe import _
 from frappe.utils import add_months, flt, today
 
+from books_assistant.funding import assess as assess_funding
 from books_assistant.integration import (
     check_document, consume_preview, create_preview, lock_documents, resolve_scope, selection,
 )
@@ -108,6 +109,10 @@ def _preparation_snapshot(payload, scope):
     lock_documents(documents)
     current = _preview(payload["supplier"], payload["invoices"], scope, payload["bank_account"])
     current["credit_ledger"] = _credit_ledger(current["credits"])
+    current["funding"] = assess_funding(
+        current["bank_details"]["bank_account"], current["to_pay"],
+        [b.name for b in current["bills"]], payload["supplier"],
+    ) if current["to_pay"] > 0 else None
     return current
 
 

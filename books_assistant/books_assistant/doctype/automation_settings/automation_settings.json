@@ -7,7 +7,7 @@
  "field_order": [
   "status_section", "status_html",
   "invoice_section", "send_invoice_emails", "invoice_print_format", "timesheet_print_format", "column_break_invoice", "always_cc", "email_subject", "email_body",
-  "payout_section", "hold_engineer_bills", "auto_release_holds",
+  "payout_section", "hold_engineer_bills", "auto_release_holds", "funding_balance_max_age_hours",
   "checks_section", "check_discount_reason", "check_hours_as_quantity", "check_due_date", "column_break_checks", "check_no_cash_account", "check_duplicate_payment", "check_client_paid",
   "health_section", "health_digest_recipients"
  ],
@@ -25,6 +25,7 @@
   {"fieldname": "payout_section", "fieldtype": "Section Break", "label": "Engineer payouts"},
   {"default": "1", "description": "When a Billing Run is approved, engineer and referral bills are put on hold (ERPNext blocks paying them) until the client pays the invoice for that work. Unblock a bill by hand to pay it earlier.", "fieldname": "hold_engineer_bills", "fieldtype": "Check", "label": "Hold Engineer Bills Until the Client Pays"},
   {"default": "1", "description": "Release held bills automatically once their client invoice is fully paid (checked after every payment and hourly).", "fieldname": "auto_release_holds", "fieldtype": "Check", "label": "Release Holds When the Client Pays"},
+  {"fieldname": "funding_balance_max_age_hours", "fieldtype": "Float", "label": "Maximum Bank Balance Age (Hours)", "default": "4", "reqd": 1, "description": "Payout approval requires bank-verified balance evidence newer than this. This app does not provide a live bank feed."},
   {"fieldname": "checks_section", "fieldtype": "Section Break", "label": "Entry checks (erp_rules)", "description": "Warnings and blocks shown while entering documents. Unticking one switches it off immediately for everyone."},
   {"default": "1", "description": "Blocks submitting a sales invoice with a discount and no reason.", "fieldname": "check_discount_reason", "fieldtype": "Check", "label": "Discount needs a reason"},
   {"default": "1", "description": "Warns when hourly work is entered as one lump sum.", "fieldname": "check_hours_as_quantity", "fieldtype": "Check", "label": "Hours as quantity"},

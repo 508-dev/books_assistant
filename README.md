@@ -232,3 +232,54 @@ fixtures to test separate database connections, duplicate requests, request-key
 reuse, rollback and internal-record permission denial. Never enable it on a
 production site. Standalone fakes do not prove database locking or migration
 correctness; the Bench tests need a real Frappe/ERPNext installation.
+
+## Payout funding check
+
+[View screenshots of the funding warning, approval review, and bank evidence form](docs/screenshots/README.md). These local UI previews use sample data and the actual funding renderer; they are not live ERPNext captures.
+
+Before sending money, an Accounts Manager or System Manager can use **Review payout funding** on a saved draft supplier Payment Entry. The supplier payout dialog also shows the funding check when its bank account changes. Its frozen preparation preview includes the funding assessment, so changes to bank evidence or reservations require a new review before credit reconciliation. Preparing a draft does not approve a transfer.
+
+If an explicitly linked client invoice is missing or inaccessible to the ERP actor, the funding check and supplier draft preparation fail closed. A fronting reason cannot bypass source-document permissions; an authorized accounting user must correct the link or access first.
+
+The check separates two questions:
+
+- **Client receipt:** engineering/project bills use the exact **Paid After Client Pays** invoice link, or the invoices linked through all associated timesheets, including grouped bills linked by `Timesheet.purchase_invoice`. An outstanding invoice warns that the co-op is fronting payment. A paid invoice counts as verified client funding only with a submitted customer receipt fully matched to incoming bank transactions. Missing links, credit-note-only settlements, and unsupported currencies remain unverified. Project/date guesses and a manually entered clearance date cannot establish receipt.
+- **Available cash:** the bank's verified available balance, less other commitments not yet reflected by the bank, active payout reservations, and a minimum buffer. An ERP ledger balance is never used as evidence of cash available at the bank.
+
+### Record bank evidence
+
+This app does **not** connect to a live bank-balance API. Open **Bank Funding Snapshot** (`/app/bank-funding-snapshot`), or **Record bank balance** from the Payment Entry. Read the **available** balance in the bank portal and record its check time, currency, other committed payments, minimum buffer, and evidence notes. Snapshots are immutable; record a newer one to correct or refresh them. **Maximum Bank Balance Age (Hours)** in Automation Settings defaults to 4 and can be set up to 24. Missing, stale, or future balance evidence cannot approve a payout.
+
+Only include other commitments **not already deducted by the bank and not reserved here**. If the bank's available balance already reflects a transfer, do not subtract it again. The app cannot discover transfers made outside this workflow: admins must include those commitments and refresh balances before transfers.
+
+### Approve and reserve
+
+1. Save the draft Payment Entry and select **Review payout funding**. The review covers the entire payment, its exact bills and allocations, recipient, company, currency, bank account, bank evidence, and other reservations.
+2. Insufficient or unverified cash blocks **Approve and reserve funds**. Unpaid or unverified client receipts require an explicit fronting reason from an authorized approver. Existing invoice holds still apply; unblocking a bill is a separate action.
+3. Approval rechecks the reviewed state and serializes on Company and the bank ledger account before inserting a durable **Payout Reservation**. A changed preview requires another review. Duplicate clicks for the same unchanged payment reuse its reservation. Before transferring, re-open the funding review to check current bank evidence.
+4. Unsaved changes show a neutral save-to-refresh notice rather than counting the payment twice. Saved edits to an approved payment invalidate its approval while keeping its amount reserved. Release an unsent reservation with a recorded reason before approving the changed payment. Reservations never expire automatically because money may already have left the bank.
+5. After the transfer is recorded as a submitted Payment Entry, record a new bank snapshot and list its reservation under **Payouts Already Reflected in This Balance**, only when the bank balance really includes that debit. This removes the reservation deduction atomically with the new balance, avoiding double subtraction. Submitted payouts cannot free cash through the release action. If an edited amount was already sent, select **Reflected** and record a reason confirming the actual changed debit is included in the new balance. If the payout was recorded against another bank, select **Not sent from this bank** for the invalid original-bank reservation and explicitly confirm with a reason that the original transfer did not occur. Both paths require submitted accounting evidence and a balance checked after that evidence; they preserve the submitted payment and record the resolution actor and reason.
+
+The first release shares Finance API v1 scope (one USD company, no foreign-currency financial records) and supports positive supplier payouts in USD, with one or more Purchase Invoice allocations totaling the payment and no additional payment taxes/deductions. Other shapes require manual review and do not receive funding approval. Existing bank reconciliation and recording historical transfers remain available: these controls govern funding approval, not posting accounting evidence after money was sent. They do not prevent someone transferring directly in the bank portal.
+
+### Integration contract
+
+Authenticated endpoints, restricted to Accounts Manager/System Manager and document/company access:
+
+| Method | Endpoint | Inputs |
+|---|---|---|
+| GET/POST | `books_assistant.funding.check` | `bank_account` (Bank Account document ID), `amount`, explicit `invoices` list, optional `supplier` |
+| GET/POST | `books_assistant.funding.check_payment` | Saved draft `payment_entry` |
+| POST | `books_assistant.funding.approve` | `payment_entry`, exact `review_token`, `fronting_reason` when required |
+| POST | `books_assistant.funding.release` | `reservation`, reason confirming it was not sent |
+
+Checks return version 1 structured cash/receipt states, stable reason codes, a review token and approval eligibility. Approval returns the durable reservation ID and assessment. A shared Discord service credential does not establish the human actor's authority; Discord approval commands need verified ERP identity mapping before consuming these endpoints. No Discord financial approval command is enabled by this change.
+
+Run the self-contained checks without a Frappe site:
+
+```bash
+python3 -m unittest books_assistant.tests.test_funding_policy books_assistant.tests.test_funding_api books_assistant.tests.test_matching
+node --test books_assistant/tests/funding_ui.test.cjs
+```
+
+The funding suite also runs against a disposable ERPNext/MariaDB site using the guarded synthetic setup in [the test guide](books_assistant/tests/README.md). It exercises actual invoices, bank receipts, reservation lifecycle, permissions and two-connection REPEATABLE READ approval races. A separate pre-funding-schema upgrade check compares full invoice/payment documents and GL rows before and after migration, then verifies a repeat migration preserves a configured freshness setting. These tests use no production export, bank provider or outgoing email. Browser theme/lifecycle checks against the installed production version remain separate from database verification.
