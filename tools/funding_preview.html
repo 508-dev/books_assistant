@@ -96,12 +96,14 @@ window.frappe = {
     document.querySelector("#title").innerHTML = 'Bank Funding Snapshot <span class="badge">Recorded</span>';
     document.querySelector("#actions").innerHTML = '<button class="primary">New snapshot</button>';
     const schema = await (await fetch("../books_assistant/books_assistant/doctype/bank_funding_snapshot/bank_funding_snapshot.json")).json();
+    const reflectionSchema = await (await fetch("../books_assistant/books_assistant/doctype/funding_reflection/funding_reflection.json")).json();
+    const reflectionColumns = reflectionSchema.fields.filter((field) => field.in_list_view);
     const values = {bank_account: "Example Operating Account", company: "Example Co-op", currency: "USD", balance_as_of: "2026-11-13 09:00:00", available_balance: "8,000.00", pending_outflows: "1,000.00", minimum_buffer: "1,000.00", notes: "Sample evidence: available balance checked in the bank portal. Other commitments exclude active ERP reservations and amounts already deducted by the bank."};
     const fields = schema.field_order.map((name) => schema.fields.find((field) => field.fieldname === name)).map((field) => {
       const wide = ["Small Text", "Table"].includes(field.fieldtype);
       let control = `<input readonly value="${esc(values[field.fieldname])}">`;
       if (field.fieldtype === "Small Text") control = `<textarea readonly>${esc(values[field.fieldname])}</textarea>`;
-      if (field.fieldtype === "Table") control = '<table><thead><tr><th>Reservation</th></tr></thead><tbody><tr><td class="muted">No reservations marked as reflected in this example</td></tr></tbody></table>';
+      if (field.fieldtype === "Table") control = `<table><thead><tr>${reflectionColumns.map((column) => `<th>${esc(column.label)}</th>`).join("")}</tr></thead><tbody><tr><td class="muted" colspan="${reflectionColumns.length}">No reservations resolved in this example</td></tr></tbody></table>`;
       return `<div class="field ${wide ? 'wide' : ''}"><label class="${field.reqd ? 'required' : ''}">${esc(field.label)}</label>${control}${field.description ? `<div class="help">${esc(field.description)}</div>` : ''}</div>`;
     }).join("");
     const form = document.querySelector("#snapshot");
