@@ -23,6 +23,7 @@ class AutomationSettings(Document):
         self.set_onload("status", status())
 
     def validate(self):
+        validate_bank_automation(self)
         for field in ("always_cc", "health_digest_recipients"):
             self.set(field, "\n".join(split_emails(self.get(field))))
 
@@ -82,3 +83,14 @@ def status():
         "last_digest": digest[0] if digest else None,
         "digest_on": bool(frappe.conf.get("books_health_recipients")),
     }
+
+
+def validate_bank_automation(doc):
+    """Scheduled financial work always names an enabled, authorized ERP actor."""
+    if not (doc.get("bank_auto_learn_enabled") or doc.get("bank_auto_book_enabled")):
+        return
+    user = doc.get("bank_auto_book_user")
+    if not user or user == "Guest" or not frappe.db.get_value("User", user, "enabled"):
+        frappe.throw("Choose an enabled Bank Automation User before enabling bank automation.")
+    if not set(frappe.get_roles(user)) & {"Accounts Manager", "System Manager"}:
+        frappe.throw("The Bank Automation User needs the Accounts Manager or System Manager role.")
