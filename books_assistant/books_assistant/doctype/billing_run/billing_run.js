@@ -164,7 +164,10 @@ function confirm_preview(frm, preview) {
 			: __("No invoice email will be queued.");
 		return `<tr><td>${esc(row.project)}</td><td>${esc(row.sales_invoice || "—")}</td>
 			<td>${format_currency(row.client_amount, snapshot.currency)}</td>
-			<td>${esc(row.engineer_bills.join(", ") || "—")}</td><td>${esc(email)}</td></tr>`;
+			<td>${format_currency(row.engineer_cost, snapshot.currency)}<div class="small">${esc(row.engineer_bills.join(", ") || "—")}</div></td>
+			<td>${format_currency(row.referral_cost, snapshot.currency)}</td>
+			<td class="${row.current_margin_warning ? "text-warning" : ""}">${esc(String(row.margin_pct))}%${row.current_margin_warning ? ` ${esc(__("Below 5% target"))}` : ""}</td>
+			<td>${esc(email)}</td></tr>`;
 	}).join("");
 	// Keep one key for this reviewed action; a retry must not create a second operation.
 	const request_id = crypto.randomUUID();
@@ -173,8 +176,10 @@ function confirm_preview(frm, preview) {
 		size: "extra-large",
 		fields: [{ fieldtype: "HTML", options: `<p>${esc(__(
 			"This submits the invoices and bills below, creates applicable referral bills, and applies the configured client-payment holds. Changed records require a new review."
-		))}</p><table class="table table-sm"><thead><tr><th>${__("Project")}</th><th>${__("Client invoice")}</th>
-			<th>${__("Amount")}</th><th>${__("Engineer bills")}</th><th>${__("Email")}</th></tr></thead><tbody>${rows}</tbody></table>` }],
+		))}</p><p>${esc(__("Selected-document margin uses only the listed client invoice, engineer bills, and its applicable referral fees. Earlier invoices and bills are excluded. Preparation warnings on the run describe its earlier preparation state."))}</p>
+			<table class="table table-sm"><thead><tr><th>${__("Project")}</th><th>${__("Client invoice")}</th>
+			<th>${__("Client amount")}</th><th>${__("Engineer cost / bills")}</th><th>${__("Referral cost")}</th>
+			<th>${__("Selected-document margin")}</th><th>${__("Email")}</th></tr></thead><tbody>${rows}</tbody></table>` }],
 		primary_action_label: __("Approve billing"),
 		primary_action() {
 			frappe.call({

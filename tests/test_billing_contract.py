@@ -328,6 +328,187 @@ class BillingContractTests(unittest.TestCase):
         ):
             self.br.sales_lines(run, "P-1")
 
+    def snapshot_project(self, row, records, referral_names=()):
+        run = Document(
+            name="BR-1",
+            status="Prepared",
+            items=[row],
+            modified="v1",
+            period_start="2026-10-01",
+            period_end="2026-10-31",
+            invoice_date="2026-11-01",
+        )
+        self.frappe.conf = Row()
+        self.frappe.get_roles = Mock(return_value=[])
+        self.frappe.get_all = Mock(return_value=[])
+        self.frappe.db.sql.return_value = [(name,) for name in referral_names]
+        self.api.check_document.side_effect = lambda doctype, name, **kwargs: records[
+            (doctype, name)
+        ]
+        self.api.invoice_email.settings.return_value = Document(send_invoice_emails=0)
+        self.api.invoice_email.print_format = Mock(return_value=None)
+        with (
+            patch.object(self.api, "_authorize", return_value=run),
+            patch.object(self.api, "invoiced_by", return_value=None),
+            patch.object(self.api, "_snapshot_document", return_value={}),
+        ):
+            snapshot = self.api._snapshot(
+                {"run_id": run.name, "projects": [row.project]},
+                {"company": "Co-op", "currency": "USD"},
+            )
+        return snapshot["projects"][0]
+
+    def test_preview_recalculates_profitability_after_prepared_drafts_are_edited(self):
+        row = Row(
+            project="P-1",
+            customer="C-1",
+            item_status="pending",
+            sales_invoice="SI-1",
+            engineer_bills="PI-1",
+            client_amount=1000,
+            engineer_cost=600,
+            referral_cost=50,
+            margin_pct=35,
+            issues="Preparation warning",
+        )
+        invoice = Document(grand_total=1000, docstatus=0)
+        bill = Document(grand_total=600)
+        project = Document(referrers=[Row(supplier="REF-1", percentage=5)])
+        records = {
+            ("Sales Invoice", "SI-1"): invoice,
+            ("Purchase Invoice", "PI-1"): bill,
+            ("Project", "P-1"): project,
+        }
+        before = self.snapshot_project(row, records)
+        self.assertEqual(
+            (before["engineer_cost"], before["referral_cost"], before["margin_pct"]),
+            (600, 50, 35),
+        )
+        # The run's preparation summaries stay unchanged; the new preview must use edited source documents.
+        invoice.grand_total, bill.grand_total, project.referrers[0].percentage = (
+            2000,
+            1800,
+            10,
+        )
+        after = self.snapshot_project(row, records)
+        self.assertEqual(
+            (
+                after["client_amount"],
+                after["engineer_cost"],
+                after["referral_cost"],
+                after["margin_pct"],
+            ),
+            (2000, 1800, 200, 0),
+        )
+        self.assertTrue(after["current_margin_warning"])
+        self.assertEqual(after["issues_scope"], "billing_preparation")
+
+    def test_preview_margin_excludes_preparation_time_earlier_invoices_and_bills(self):
+        row = Row(
+            project="P-1",
+            customer="C-1",
+            item_status="pending",
+            sales_invoice="SI-1",
+            engineer_bills="PI-1\nPI-1",
+            client_amount=4000,
+            engineer_cost=3000,
+            referral_cost=50,
+            margin_pct=23.75,
+        )
+        records = {
+            ("Sales Invoice", "SI-1"): Document(grand_total=1000, docstatus=0),
+            ("Purchase Invoice", "PI-1"): Document(grand_total=600),
+            ("Project", "P-1"): Document(referrers=[]),
+        }
+        snapshot = self.snapshot_project(row, records)
+        self.assertEqual(snapshot["profitability_scope"], "selected_approval_documents")
+        self.assertEqual(
+            (
+                snapshot["client_amount"],
+                snapshot["engineer_cost"],
+                snapshot["margin_pct"],
+            ),
+            (1000, 600, 40),
+        )
+        self.assertEqual(snapshot["engineer_bills"], ["PI-1"])
+
+    def test_submitted_invoice_uses_actual_active_referral_bills_once(self):
+        row = Row(
+            project="P-1",
+            customer="C-1",
+            item_status="pending",
+            sales_invoice="SI-1",
+            engineer_bills="PI-1",
+            referral_cost=9999,
+            margin_pct=-999,
+        )
+        records = {
+            ("Sales Invoice", "SI-1"): Document(grand_total=1000, docstatus=1),
+            ("Purchase Invoice", "PI-1"): Document(grand_total=600),
+            ("Purchase Invoice", "REF-PI-1"): Document(
+                grand_total=80, supplier="REF-1"
+            ),
+            ("Project", "P-1"): Document(
+                referrers=[Row(supplier="REF-1", percentage=50)]
+            ),
+        }
+        snapshot = self.snapshot_project(row, records, ["REF-PI-1", "REF-PI-1"])
+        self.assertEqual((snapshot["referral_cost"], snapshot["margin_pct"]), (80, 32))
+        self.assertEqual(snapshot["referral_bills"], ["REF-PI-1"])
+        self.assertIn("docstatus != 2", self.frappe.db.sql.call_args.args[0])
+
+    def test_draft_referrals_do_not_double_count_existing_fees_or_duplicate_suppliers(
+        self,
+    ):
+        row = Row(
+            project="P-1",
+            customer="C-1",
+            item_status="pending",
+            sales_invoice="SI-1",
+            engineer_bills="PI-1",
+        )
+        records = {
+            ("Sales Invoice", "SI-1"): Document(grand_total=1000, docstatus=0),
+            ("Purchase Invoice", "PI-1"): Document(grand_total=600),
+            ("Purchase Invoice", "REF-PI-1"): Document(
+                grand_total=80, supplier="REF-1"
+            ),
+            ("Project", "P-1"): Document(
+                referrers=[
+                    Row(supplier="REF-1", percentage=50),
+                    Row(supplier="REF-2", percentage=5),
+                    Row(supplier="REF-2", percentage=20),
+                ]
+            ),
+        }
+        snapshot = self.snapshot_project(row, records, ["REF-PI-1"])
+        self.assertEqual((snapshot["referral_cost"], snapshot["margin_pct"]), (130, 27))
+
+    def test_edited_invoice_linkage_requires_a_new_preparation(self):
+        scope = {"company": "Co-op", "currency": "USD"}
+        for doctype, project, customer in (
+            ("Sales Invoice", "OTHER", "C-1"),
+            ("Sales Invoice", "P-1", "OTHER"),
+            ("Purchase Invoice", "OTHER", None),
+        ):
+            with self.subTest(doctype=doctype, project=project, customer=customer):
+                row = Row(
+                    project="P-1",
+                    customer="C-1",
+                    sales_invoice="SI-1" if doctype == "Sales Invoice" else None,
+                    engineer_bills="PI-1" if doctype == "Purchase Invoice" else None,
+                )
+                run = Document(items=[row])
+                invoice = Document(
+                    project=project, customer=customer, check_permission=Mock()
+                )
+                self.api.check_document.side_effect = lambda dt, name, **kwargs: (
+                    run if dt == "Billing Run" else invoice
+                )
+                with self.assertRaises(ValueError):
+                    self.api._authorize({"run_id": "BR-1", "projects": ["P-1"]}, scope)
+                invoice.check_permission.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

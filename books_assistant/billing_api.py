@@ -2,6 +2,7 @@
 
 import frappe
 from frappe import _
+from frappe.utils import flt
 
 from books_assistant import invoice_email
 from books_assistant.books_assistant.doctype.billing_run.billing_run import (
@@ -9,6 +10,7 @@ from books_assistant.books_assistant.doctype.billing_run.billing_run import (
     PREPARERS,
     bill_names,
     invoiced_by,
+    margin_pct,
 )
 from books_assistant.integration import (
     check_document,
@@ -45,6 +47,14 @@ def _authorize(payload, scope):
             doc = check_document(
                 doctype, name, company=scope["company"], currency=scope["currency"]
             )
+            if doc.project != row.project or (
+                doctype == "Sales Invoice" and doc.customer != row.customer
+            ):
+                frappe.throw(
+                    _(
+                        "A reviewed invoice's project or customer changed. Prepare the project again."
+                    )
+                )
             doc.check_permission("submit")
     return run
 
@@ -65,6 +75,54 @@ def _snapshot_document(doctype, name, scope):
     return {key: value for key, value in data.items() if not key.startswith("__")}
 
 
+def _profitability(row, invoice, referral_names, scope):
+    """Current costs for reviewed documents, including fees submission will create."""
+    engineer_names = set(bill_names(row))
+    engineer_cost = sum(
+        flt(
+            check_document(
+                "Purchase Invoice",
+                name,
+                company=scope["company"],
+                currency=scope["currency"],
+            ).grand_total
+        )
+        for name in engineer_names
+    )
+    referral_cost, covered_suppliers = 0, set()
+    for name in sorted(set(referral_names)):
+        bill = check_document(
+            "Purchase Invoice",
+            name,
+            company=scope["company"],
+            currency=scope["currency"],
+        )
+        covered_suppliers.add(bill.supplier)
+        if name not in engineer_names:
+            referral_cost += flt(bill.grand_total)
+    client_amount = flt(invoice.grand_total) if invoice else 0
+    if invoice and invoice.docstatus == 0:
+        # Match referral_fee's SI+supplier duplicate guard and penny-rounding rule.
+        project = check_document("Project", row.project, company=scope["company"])
+        for referrer in project.get("referrers") or []:
+            if not referrer.supplier or referrer.supplier in covered_suppliers:
+                continue
+            amount = round(client_amount * flt(referrer.percentage) / 100, 2)
+            if amount > 0:
+                referral_cost += amount
+                covered_suppliers.add(referrer.supplier)
+    engineer_cost, referral_cost = flt(engineer_cost, 2), flt(referral_cost, 2)
+    current_margin = margin_pct(client_amount, engineer_cost, referral_cost)
+    return {
+        "profitability_scope": "selected_approval_documents",
+        "client_amount": client_amount,
+        "engineer_cost": engineer_cost,
+        "referral_cost": referral_cost,
+        "margin_pct": current_margin,
+        "current_margin_warning": bool(client_amount and current_margin < 5),
+    }
+
+
 def _snapshot(payload, scope):
     """Lock and reload canonical documents; never trust a client-supplied run object."""
     lock_documents([("Company", scope["company"])])
@@ -82,6 +140,7 @@ def _snapshot(payload, scope):
         )
 
     documents = set()
+    referral_bills = {}
     for row in rows:
         documents.add(("Project", row.project))
         if row.customer:
@@ -99,7 +158,7 @@ def _snapshot(payload, scope):
         if row.sales_invoice:
             for (name,) in frappe.db.sql(
                 "select name from `tabPurchase Invoice` where referral_source_si = %s "
-                "and docstatus = 0 order by name for update",
+                "and docstatus != 2 order by name for update",
                 row.sales_invoice,
             ):
                 check_document(
@@ -109,6 +168,7 @@ def _snapshot(payload, scope):
                     currency=scope["currency"],
                 )
                 documents.add(("Purchase Invoice", name))
+                referral_bills.setdefault(row.sales_invoice, []).append(name)
             for name in frappe.get_all(
                 "Sales Invoice Timesheet",
                 filters={"parent": row.sales_invoice},
@@ -163,14 +223,8 @@ def _snapshot(payload, scope):
         )
         if will_email:
             invoice.check_permission("email")
-        bill_total = sum(
-            check_document(
-                "Purchase Invoice",
-                name,
-                company=scope["company"],
-                currency=scope["currency"],
-            ).grand_total
-            for name in bill_names(row)
+        profitability = _profitability(
+            row, invoice, referral_bills.get(row.sales_invoice, []), scope
         )
         selected.append(
             {
@@ -178,12 +232,13 @@ def _snapshot(payload, scope):
                 "customer": row.customer,
                 "item_status": row.item_status,
                 "sales_invoice": row.sales_invoice,
-                "client_amount": invoice.grand_total if invoice else 0,
-                "engineer_bills": bill_names(row),
-                "engineer_cost": bill_total,
-                "referral_cost": row.referral_cost,
-                "margin_pct": row.margin_pct,
+                **profitability,
+                "engineer_bills": sorted(set(bill_names(row))),
+                "referral_bills": sorted(
+                    set(referral_bills.get(row.sales_invoice, []))
+                ),
                 "issues": row.issues,
+                "issues_scope": "billing_preparation",
                 "recipients": to,
                 "cc": cc,
                 "print_format": invoice_email.print_format(invoice)

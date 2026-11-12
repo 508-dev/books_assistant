@@ -192,6 +192,11 @@ contain `operation_id`. Billing project state is `pending`, `approved`, `failed`
 Invoice email results distinguish queued, disabled, missing recipient, failed,
 and previously submitted; **queued does not mean delivered**.
 
+Approval previews calculate profitability from the current selected invoice and
+bills, including applicable referral fees. This selected-document margin excludes
+earlier invoices/bills that may be included in the prepared run's period totals.
+The final confirmation labels that scope and shows current cost/margin warnings.
+
 ### Upgrade and validate
 
 Run `bench --site <test-site> migrate` on a disposable copy first. This syncs the

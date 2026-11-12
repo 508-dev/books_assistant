@@ -41,6 +41,8 @@ class TestIntegrationTransactions(unittest.TestCase):
         frappe.connect()
         frappe.set_user("Administrator")
         try:
+            frappe.db.rollback()
+            frappe.db.sql("set session transaction isolation level repeatable read")
             # Force an established MVCC snapshot before either thread starts
             # executing. The ledger must still use current locking reads.
             frappe.db.sql("select name from `tabAPI Request` limit 1")
