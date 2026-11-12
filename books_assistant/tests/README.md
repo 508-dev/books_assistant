@@ -181,9 +181,10 @@ bench --site <test-site> execute books_assistant.tests.test_bank_automation_site
 The upgrade assertions preserve source documents, ledger entries, timestamps
 and old rule settings; create the provenance schema; and verify that automatic
 booking stays off. The strict runner raises on failures, errors **or skips**.
-Its twelve tests cover real learning, booking/retry/provenance, generated-history
+Its thirteen tests cover real learning, booking/retry/provenance, generated-history
 exclusion, alternate-prefix conflicts, cancelled evidence, disabled rules and
 amount limits, outer rollback, nonfinance denial and read-only provenance.
+The scheduled path books as a configured Accounts Manager and restores its caller.
 Separate REPEATABLE READ connections verify exactly one booking under duplicate
 workers and detection of a blocker committed after the caller's snapshot. A
 concurrent customer update proves that blocker scans do not lock unrelated

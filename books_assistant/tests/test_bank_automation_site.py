@@ -239,6 +239,18 @@ class TestRealBankAutomation(unittest.TestCase):
         finally:
             frappe.set_user("Administrator")
 
+    def test_scheduler_books_as_configured_finance_user_and_restores_caller(self):
+        from books_assistant.bank_automation import run_scheduled
+        _rule, line = self.prepare()
+        user = frappe.get_doc({"doctype": "User", "email": uuid.uuid4().hex + "@example.test",
+            "first_name": "Synthetic scheduled finance", "send_welcome_email": 0,
+            "roles": [{"role": "Accounts Manager"}]}).insert(ignore_permissions=True)
+        frappe.db.set_single_value("Automation Settings", "bank_auto_book_user", user.name)
+        result = run_scheduled()
+        self.assertEqual(self.code(result, line), "BOOKED")
+        self.assertEqual(frappe.get_doc("Bank Rule Booking", line.name).actor, user.name)
+        self.assertEqual(frappe.session.user, "Administrator")
+
     def test_secondary_blocker_connection_is_read_only(self):
         from books_assistant.bank_automation import _current_reader
         from pymysql.err import OperationalError
