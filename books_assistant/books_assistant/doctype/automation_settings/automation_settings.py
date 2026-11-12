@@ -89,7 +89,7 @@ def status():
 
 def validate_bank_automation(doc):
     """Scheduled financial work always names an enabled, authorized ERP actor."""
-    if not (doc.get("bank_auto_learn_enabled") or doc.get("bank_auto_book_enabled")):
+    if not (flt(doc.get("bank_auto_learn_enabled")) or flt(doc.get("bank_auto_book_enabled"))):
         return
     user = doc.get("bank_auto_book_user")
     if not user or user == "Guest" or not frappe.db.get_value("User", user, "enabled"):

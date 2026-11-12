@@ -19,7 +19,8 @@ class TestBankAutomationSettings(unittest.TestCase):
         document = ModuleType("frappe.model.document")
         document.Document = object
         utils = ModuleType("frappe.utils")
-        utils.add_days = utils.flt = utils.today = Mock()
+        utils.add_days = utils.today = Mock()
+        utils.flt = lambda value: float(value or 0)
         email = ModuleType("books_assistant.invoice_email")
         email.split_emails = Mock()
         path = Path(__file__).parents[1] / "books_assistant/doctype/automation_settings/automation_settings.py"
@@ -36,6 +37,10 @@ class TestBankAutomationSettings(unittest.TestCase):
         self.validate({})
         self.frappe.db.get_value.assert_not_called()
         self.frappe.get_roles.assert_not_called()
+
+    def test_new_check_field_string_zero_defaults_do_not_require_actor(self):
+        self.validate({"bank_auto_learn_enabled": "0", "bank_auto_book_enabled": "0"})
+        self.frappe.db.get_value.assert_not_called()
 
     def test_either_switch_requires_an_enabled_actor(self):
         for switch in ("bank_auto_learn_enabled", "bank_auto_book_enabled"):

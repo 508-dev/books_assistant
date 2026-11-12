@@ -57,7 +57,7 @@ class TestBankAutomaticBookingRuntime(unittest.TestCase):
             patch.object(self.auto, "_current_reader", side_effect=current_reader),
             patch.dict(sys.modules, {"books_assistant.integration": self.integration, "books_assistant.bank_review": self.review}),
             patch.object(books_assistant, "bank_review", self.review, create=True),
-            patch.object(self.auto, "_settings", side_effect=lambda: self.settings),
+            patch.object(self.auto, "_settings", side_effect=lambda **kwargs: self.settings),
             patch.object(self.auto, "_current_rules", side_effect=lambda: [self.rule]),
             patch.object(self.auto, "_existing_candidate", return_value=None),
             patch.object(self.auto.learning, "load_observations", return_value=consistent_history()),
@@ -145,7 +145,7 @@ class TestBankAutomaticBookingRuntime(unittest.TestCase):
     def test_kill_switch_before_execution_stops_booking(self):
         enabled = self.settings
         disabled = Doc({**enabled, "bank_auto_book_enabled": 0})
-        self.auto._settings.side_effect = [enabled, enabled, disabled]
+        self.auto._settings.side_effect = [enabled, enabled, enabled, disabled]
         self.assertEqual(self.codes(self.auto._run("Co-op")), ["DISABLED"])
         self.review.execute.assert_not_called()
 

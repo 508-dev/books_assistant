@@ -224,7 +224,7 @@ def learn(scope, observations=None):
         matching = frappe.db.sql(
             "select name, bank_account from `tabBank Rule` where upper(trim(description_contains))=%(keyword)s "
             "and direction=%(direction)s and (bank_account=%(bank_account)s or bank_account is null or bank_account='') "
-            "order by name for update", candidate, as_dict=True)
+            "order by name for update", {key: candidate[key] for key in ("keyword", "direction", "bank_account")}, as_dict=True)
         evidence = {"evidence_count": candidate["evidence_count"], "last_evidence_on": candidate["last_evidence_on"],
                     "source_transactions": "\n".join(r["bank_transaction"] for r in candidate["evidence"])}
         if matching:

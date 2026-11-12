@@ -169,7 +169,8 @@ def _existing_candidate(bt, bank_gl, scope):
         def query(statement, parameters=None, *, as_dict=False):
             # Include the caller's own uncommitted documents as well as newly
             # committed external records. A stale extra blocker only defers work.
-            own = frappe.db.sql(statement, parameters, as_dict=as_dict)
+            own = (frappe.db.sql(statement, as_dict=as_dict) if parameters is None
+                   else frappe.db.sql(statement, parameters, as_dict=as_dict))
             fresh = current(statement, parameters, as_dict=as_dict)
             return list(own) + list(fresh)
 
@@ -254,10 +255,11 @@ def _configured_user(settings):
     return user
 
 
-def _settings():
+def _settings(*, for_update=True):
     # Locking current reads avoid stale repeatable-read snapshots after lock waits.
     # The bounded batch is atomic; a switch save may wait for that batch to finish.
-    values = dict(frappe.db.sql("select field, value from `tabSingles` where doctype='Automation Settings' for update"))
+    values = dict(frappe.db.sql("select field, value from `tabSingles` where doctype='Automation Settings'"
+                                + (" for update" if for_update else "")))
     for field in ("bank_auto_learn_enabled", "bank_auto_book_enabled"):
         values[field] = bool(int(values.get(field) or 0))
     return values
@@ -277,7 +279,7 @@ def _run(company=None, *, scheduled=False):
     from books_assistant import bank_review as br
     from books_assistant.integration import resolve_scope, check_document, lock_documents
 
-    settings = _settings()
+    settings = _settings(for_update=False)
     if not (settings.get("bank_auto_learn_enabled") or settings.get("bank_auto_book_enabled")):
         return {"code": "DISABLED", "rules_created": [], "results": []}
     configured = _configured_user(settings)
@@ -285,6 +287,12 @@ def _run(company=None, *, scheduled=False):
         frappe.throw(_("The configured bank automation user changed. Retry the scheduled run."))
     scope = resolve_scope(company)
     lock_documents([("Company", scope["company"])])
+    # Match every finance mutation's Company-before-dependent-record lock order.
+    settings = _settings()
+    if not (settings.get("bank_auto_learn_enabled") or settings.get("bank_auto_book_enabled")):
+        return {"code": "DISABLED", "rules_created": [], "results": []}
+    if scheduled and _configured_user(settings) != frappe.session.user:
+        frappe.throw(_("The configured bank automation user changed. Retry the scheduled run."))
     observations = learning.load_observations(scope)
     learned = {"rules_created": [], "rules_updated": []}
     if settings.get("bank_auto_learn_enabled"):
@@ -429,7 +437,7 @@ def run(company=None):
 
 
 def run_scheduled():
-    settings = _settings()
+    settings = _settings(for_update=False)
     if not (settings.get("bank_auto_learn_enabled") or settings.get("bank_auto_book_enabled")):
         return {"code": "DISABLED", "results": []}
     original_user = frappe.session.user
