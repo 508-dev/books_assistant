@@ -30,7 +30,32 @@ def preview(supplier, invoices=None):
         "to_pay": flt(max(bills_total - credit_total, 0), 2),
         "bank_account": usual_bank_account(supplier),
         "held": held_bills(supplier),
+        "fronting": fronting_warnings([b.name for b in bills]),
     }
+
+
+@frappe.whitelist()
+def payment_warnings(references):
+    """The same warnings for a draft Payment Entry's bills, shown on the form before any money is sent."""
+    names = [
+        r.get("reference_name") for r in frappe.parse_json(references) or []
+        if r.get("reference_doctype") == "Purchase Invoice" and r.get("reference_name")
+    ]
+    return fronting_warnings([n for n in names if frappe.has_permission("Purchase Invoice", "read", n)])
+
+
+def fronting_warnings(bill_names):
+    """erp_rules' "client paid first" warning for these bills. That check runs when a payment is submitted,
+    which is after the money has gone; this shows the same words while there's still time to decide."""
+    if not bill_names or "ClientPaidCheck" in (frappe.conf.get("erp_rules_disabled_checks") or []):
+        return []
+    try:
+        from erp_rules.checks.client_paid_check import ClientPaidCheck
+    except ImportError:
+        return []
+    doc = frappe._dict(references=[frappe._dict(reference_doctype="Purchase Invoice", reference_name=name)
+                                   for name in dict.fromkeys(bill_names)])
+    return [problem.message for problem in ClientPaidCheck().problems(doc)]
 
 
 @frappe.whitelist()
@@ -128,6 +153,8 @@ def new_payment(supplier, bills, bank_gl):
     total = flt(sum(b.outstanding_amount for b in bills), 2)
     pe.paid_amount = pe.received_amount = total
     pe.paid_from = bank_gl
+    # ERPNext fills Company Bank Account with the default bank; make it the one actually paid from.
+    pe.bank_account = frappe.db.get_value("Bank Account", {"account": bank_gl, "is_company_account": 1}, "name")
     pe.posting_date = pe.reference_date = today()
     pe.reference_no = payout_reference(bank_gl, supplier)
     return pe

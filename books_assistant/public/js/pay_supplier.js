@@ -1,5 +1,17 @@
 frappe.provide("books_assistant");
 
+// The client hasn't paid for some of these bills yet, so paying them means 508 fronts the money.
+function fronting(warnings) {
+	if (!warnings || !warnings.length) return "";
+	const items = warnings.map((w) => `<li>${frappe.utils.escape_html(w)}</li>`).join("");
+	return `<div class="alert alert-warning" style="font-size: 12px">
+		<b>${__("The client hasn't paid for some of these yet. Paying now means 508 fronts the money.")}</b>
+		<ul style="margin: 6px 0 0; padding-left: 18px">${items}</ul>
+		<div style="margin-top: 6px">${__("If that's not intended, close this and use Pay selected bills in the Purchase Invoice list with only the bills to pay.")}</div>
+	</div>`;
+}
+books_assistant.fronting_html = fronting;
+
 // Shows what a supplier is owed, with any earlier credit, then applies the credit and opens a draft payment.
 books_assistant.pay_supplier = function (supplier, invoices) {
 	frappe
@@ -51,7 +63,7 @@ books_assistant.pay_supplier = function (supplier, invoices) {
 							<thead><tr><th>${__("Bill")}</th><th>${__("Date")}</th><th>${__("Project")}</th>
 							<th class="text-right">${__("Owed")}</th></tr></thead><tbody>${bills}</tbody>
 							<tfoot><tr><th colspan="3">${__("Total owed")}</th><th class="text-right">${money(p.bills_total)}</th></tr></tfoot>
-						</table>${credit}${held}
+						</table>${credit}${held}${fronting(p.fronting)}
 						<h4>${__("To pay: {0}", [money(p.to_pay)])}</h4>`,
 					},
 					{

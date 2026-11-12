@@ -85,6 +85,16 @@ class TestBankReview(unittest.TestCase):
         self.assertTrue(reconciled(line))
         self.assertEqual(frappe.db.get_value("Bank Rule", rule.name, "times_used"), 1)
 
+    def test_most_specific_rule_wins(self):
+        frappe.get_doc({"doctype": "Bank Rule", "rule_name": "Testvendor", "description_contains": "TESTVENDOR",
+                        "direction": "Money out", "account": "Software Subscriptions - 5", "times_used": 50}).insert()
+        specific = frappe.get_doc({"doctype": "Bank Rule", "rule_name": "Testvendor client", "direction": "Money out",
+                                   "description_contains": "SVCSTESTCLIENT", "account": "5223 - Miscellaneous Expenses - 5"}).insert()
+        s = self.suggest(bank_line("Novo - Novo", 12.2, "TESTVENDOR SVCSTESTCLIENT.C"))
+        self.assertEqual(s["rule"], specific.name)
+        self.assertEqual(s["confidence"], br.CHECK)  # a new rule is checked until it has been used twice
+        self.assertEqual(self.suggest(bank_line("Novo - Novo", 8.4, "TESTVENDOR Workspace_508."))["rule"], "Testvendor")
+
     def test_rules_cannot_book_to_parties(self):
         with self.assertRaises(frappe.ValidationError):
             frappe.get_doc({"doctype": "Bank Rule", "rule_name": "Bad", "description_contains": "X",
@@ -114,3 +124,10 @@ class TestPaySupplier(unittest.TestCase):
         self.assertEqual(len(payment["references"]), len(ps.open_bills(supplier)))
         self.assertIn("payout", payment["reference_no"])
         self.assertIn(supplier, payment["reference_no"])
+
+    def test_company_bank_account_matches_the_bank_paid_from(self):
+        supplier = frappe.db.get_value("Purchase Invoice", {"docstatus": 1, "outstanding_amount": [">", 1], "is_return": 0,
+                                                           "on_hold": 0}, "supplier")
+        for bank in frappe.get_all("Bank Account", filters={"is_company_account": 1}, fields=["name", "account"]):
+            payment = ps.new_payment(supplier, ps.open_bills(supplier), bank.account)
+            self.assertEqual((payment.paid_from, payment.bank_account), (bank.account, bank.name))
