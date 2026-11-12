@@ -2,6 +2,7 @@
 
 import sys
 from types import ModuleType, SimpleNamespace
+from contextlib import contextmanager
 import unittest
 from unittest.mock import Mock, patch
 
@@ -48,7 +49,12 @@ class TestBankAutomaticBookingRuntime(unittest.TestCase):
                       "bank_transaction": self.bt.name, "amount": 20}
         self.review.Context = Mock(side_effect=lambda: SimpleNamespace(rules=[self.rule], suggest=Mock(return_value=suggestion)))
         import books_assistant
+        @contextmanager
+        def current_reader():
+            yield lambda statement, parameters=None, **kwargs: self.frappe.db.sql(statement, parameters, **kwargs)
+
         self.patches = [
+            patch.object(self.auto, "_current_reader", side_effect=current_reader),
             patch.dict(sys.modules, {"books_assistant.integration": self.integration, "books_assistant.bank_review": self.review}),
             patch.object(books_assistant, "bank_review", self.review, create=True),
             patch.object(self.auto, "_settings", side_effect=lambda: self.settings),

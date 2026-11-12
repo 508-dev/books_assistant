@@ -6,8 +6,9 @@ separate human review of specific evidence, never a side effect of learning.
 
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+import math
 
-from books_assistant.matching import vendor_key
+from books_assistant.matching import keyword_in, vendor_key
 
 MIN_EVIDENCE = 3
 MIN_DATES = 2
@@ -166,13 +167,46 @@ def eligible_ledger(ledger):
 
 
 def candidate_for_rule(rule, observations, today, scope=None):
-    for candidate in infer_candidates(observations, today):
-        if scope and (candidate["company"] != scope["company"] or candidate["currency"] != scope["currency"]):
+    """Authorize only evidence consistent across the rule's actual matching scope.
+
+    Merchant keys group suggestions, but a keyword can match descriptions under
+    several such keys. Every matching historical line must agree, including
+    ineligible lines whose account cannot safely be established.
+    """
+    keyword = (rule.description_contains or "").strip().upper()
+    if not keyword or "|" in keyword or not rule.bank_account or rule.direction not in {"Money in", "Money out"}:
+        return None
+    try:
+        lower = float(getattr(rule, "min_amount", None) or 0)
+        upper = float(getattr(rule, "max_amount", None) or 0)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    if not math.isfinite(lower) or not math.isfinite(upper) or lower < 0 or upper < 0 or (upper and lower > upper):
+        return None
+    today = as_date(today)
+    matching = []
+    for row in observations:
+        if (row.get("generated") or row["bank_account"] != rule.bank_account or row["direction"] != rule.direction
+                or (scope and (row["company"] != scope["company"] or row["currency"] != scope["currency"]))
+                or not today - timedelta(days=HISTORY_DAYS) <= as_date(row["date"]) <= today
+                or not keyword_in(keyword, row["description"])):
             continue
-        if (candidate["keyword"] == (rule.description_contains or "").strip().upper()
-                and candidate["bank_account"] == rule.bank_account and candidate["account"] == rule.account
-                and candidate["direction"] == rule.direction):
-            return candidate
+        try:
+            amount = float(row["amount"])
+        except (KeyError, ValueError, TypeError, OverflowError):
+            return None  # Missing amount cannot prove a matching line lies outside the reviewed bounds.
+        if not math.isfinite(amount):
+            return None
+        if (lower and amount < lower) or (upper and amount > upper):
+            continue
+        matching.append(row)
+    for candidate in infer_candidates(matching, today):
+        if (candidate["keyword"] != keyword or candidate["account"] != rule.account):
+            continue
+        relevant = [row for row in matching if row["company"] == candidate["company"] and row["currency"] == candidate["currency"]]
+        if any(row.get("ineligible") or row.get("account") != rule.account for row in relevant):
+            return None
+        return candidate
     return None
 
 

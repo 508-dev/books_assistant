@@ -152,7 +152,7 @@ class TestBankLearningEvidence(unittest.TestCase):
 class TestRuleEvidenceLookup(unittest.TestCase):
     def setUp(self):
         self.rule = SimpleNamespace(description_contains=" github ", bank_account="Operating Bank",
-                                    account="Software Expense", direction="Money out")
+                                    account="Software Expense", direction="Money out", min_amount=10, max_amount=30)
 
     def test_rule_requires_matching_merchant_bank_destination_and_direction(self):
         self.assertIsNotNone(candidate_for_rule(self.rule, consistent_history(), TODAY))
@@ -166,6 +166,50 @@ class TestRuleEvidenceLookup(unittest.TestCase):
         self.assertIsNone(candidate_for_rule(self.rule, consistent_history()[:2], TODAY))
         rows = consistent_history() + [observation(4, account="Other Expense")]
         self.assertIsNone(candidate_for_rule(self.rule, rows, TODAY))
+
+    def test_conflicting_account_under_another_vendor_key_blocks_actual_rule_match(self):
+        conflict = observation(4, description="PAYMENT GITHUB", account="Office Expense")
+        self.assertIsNone(candidate_for_rule(self.rule, consistent_history() + [conflict], TODAY))
+
+    def test_ineligible_history_under_another_vendor_key_blocks_actual_rule_match(self):
+        marker = observation(4, description="PAYMENT GITHUB", ineligible=True)
+        marker.pop("account")
+        self.assertIsNone(candidate_for_rule(self.rule, consistent_history() + [marker], TODAY))
+
+    def test_conflict_detection_includes_excluded_vendor_prefixes_that_rule_would_match(self):
+        conflict = observation(4, description="WISE GITHUB", account="Office Expense")
+        self.assertIsNone(candidate_for_rule(self.rule, consistent_history() + [conflict], TODAY))
+
+    def test_rule_matching_respects_both_inclusive_reviewed_amount_bounds(self):
+        for amount in (10, 30):
+            with self.subTest(amount=amount):
+                conflict = observation(4, description="PAYMENT GITHUB", account="Office Expense", amount=amount)
+                self.assertIsNone(candidate_for_rule(self.rule, consistent_history() + [conflict], TODAY))
+        for amount in (9.99, 30.01):
+            with self.subTest(amount=amount):
+                conflict = observation(4, description="PAYMENT GITHUB", account="Office Expense", amount=amount)
+                self.assertIsNotNone(candidate_for_rule(self.rule, consistent_history() + [conflict], TODAY))
+
+    def test_evidence_outside_reviewed_amount_bounds_cannot_reach_threshold(self):
+        for amount in (9.99, 30.01):
+            with self.subTest(amount=amount):
+                history = consistent_history()[:2] + [observation(3, amount=amount)]
+                self.assertIsNone(candidate_for_rule(self.rule, history, TODAY))
+
+    def test_different_scope_or_nonmatching_words_do_not_create_conflicts(self):
+        for changes in ({"company": "Other Company"}, {"currency": "EUR"}, {"bank_account": "Savings Bank"},
+                        {"direction": "Money in"}, {"description": "PAYMENT GITHUBISH"}, {"generated": True}):
+            with self.subTest(changes=changes):
+                conflict = observation(4, **{"description": "PAYMENT GITHUB", "account": "Office Expense", **changes})
+                self.assertIsNotNone(candidate_for_rule(self.rule, consistent_history() + [conflict], TODAY,
+                                                       {"company": "Co-op", "currency": "USD"}))
+
+    def test_conflicts_outside_history_window_do_not_poison_current_rule(self):
+        for days_ago in (181, -1):
+            with self.subTest(days_ago=days_ago):
+                conflict = observation(4, days_ago, description="PAYMENT GITHUB", account="Office Expense")
+                self.assertIsNotNone(candidate_for_rule(self.rule, consistent_history() + [conflict], TODAY))
+
 
 
 class TestEligibleLearningLedger(unittest.TestCase):

@@ -8,7 +8,7 @@ from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from books_assistant.tests.test_bank_learning_policy import TODAY, consistent_history
+from books_assistant.tests.test_bank_learning_policy import TODAY, consistent_history, observation
 
 
 class Doc(dict):
@@ -68,6 +68,20 @@ class TestAutomaticBookingGuards(unittest.TestCase):
     def test_new_conflict_blocks_previously_reviewed_rule(self):
         history = consistent_history() + [{**consistent_history()[0], "bank_transaction": "BT-NEW", "account": "Other Expense"}]
         self.assertFalse(self.auto.evidence_still_valid(self.rule, history))
+
+    def test_alternate_merchant_key_conflict_invalidates_existing_automatic_authorization(self):
+        conflict = observation(4, description="PAYMENT GITHUB", account="Other Expense")
+        self.assertFalse(self.auto.evidence_still_valid(self.rule, consistent_history() + [conflict]))
+
+    def test_alternate_merchant_key_ineligible_history_invalidates_existing_authorization(self):
+        marker = observation(4, description="PAYMENT GITHUB", ineligible=True)
+        marker.pop("account")
+        self.assertFalse(self.auto.evidence_still_valid(self.rule, consistent_history() + [marker]))
+
+    def test_conflicting_classification_outside_frozen_amount_range_does_not_expand_or_disable_rule(self):
+        conflict = observation(4, description="PAYMENT GITHUB", account="Other Expense", amount=1000)
+        self.assertTrue(self.auto.evidence_still_valid(self.rule, consistent_history() + [conflict]))
+        self.assertEqual(self.auto.rule_config(self.rule)["max_amount"], 30)
 
     def test_new_consistent_sources_do_not_expand_reviewed_rule_limits(self):
         history = consistent_history() + [{**consistent_history()[0], "bank_transaction": "BT-NEW", "amount": 1000}]
@@ -160,6 +174,15 @@ class TestAutomaticBookingGuards(unittest.TestCase):
         self.rule.get_doc_before_save = Mock(return_value=None)
         with patch.dict(sys.modules, {"books_assistant.integration": self._authorization_dependencies()}), patch.object(
             self.auto.learning, "load_observations", return_value=consistent_history()[:2]
+        ):
+            with self.assertRaises(ValueError):
+                self.auto.validate_auto_rule(self.rule)
+
+    def test_alternate_merchant_key_conflict_cannot_enable_automatic_booking(self):
+        self.rule.get_doc_before_save = Mock(return_value=None)
+        conflict = observation(4, description="PAYMENT GITHUB", account="Other Expense")
+        with patch.dict(sys.modules, {"books_assistant.integration": self._authorization_dependencies()}), patch.object(
+            self.auto.learning, "load_observations", return_value=consistent_history() + [conflict]
         ):
             with self.assertRaises(ValueError):
                 self.auto.validate_auto_rule(self.rule)

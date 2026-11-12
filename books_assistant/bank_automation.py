@@ -3,6 +3,7 @@
 import json
 import math
 from collections import Counter
+from contextlib import contextmanager
 
 import frappe
 from frappe import _
@@ -135,7 +136,47 @@ def evidence_still_valid(rule, observations):
             and approved.get("scope", {}).get("currency") == candidate["currency"])
 
 
+@contextmanager
+def _current_reader():
+    """Read committed blockers without locking unrelated business records.
+
+    A separate read-only, autocommit connection sees commits made after the
+    caller established a REPEATABLE READ snapshot. The caller's transaction,
+    source locks and accounting writes are neither committed nor replaced.
+    """
+    connection = frappe.db.create_connection()
+    try:
+        connection.autocommit(True)
+        with connection.cursor() as cursor:
+            cursor.execute("SET SESSION TRANSACTION READ ONLY")
+
+        def read(statement, parameters=None, *, as_dict=False):
+            with connection.cursor() as cursor:
+                cursor.execute(statement, parameters)
+                rows = cursor.fetchall()
+                if as_dict:
+                    columns = [column[0] for column in cursor.description]
+                    return [frappe._dict(zip(columns, row)) for row in rows]
+                return rows
+
+        yield read
+    finally:
+        connection.close()
+
+
 def _existing_candidate(bt, bank_gl, scope):
+    with _current_reader() as current:
+        def query(statement, parameters=None, *, as_dict=False):
+            # Include the caller's own uncommitted documents as well as newly
+            # committed external records. A stale extra blocker only defers work.
+            own = frappe.db.sql(statement, parameters, as_dict=as_dict)
+            fresh = current(statement, parameters, as_dict=as_dict)
+            return list(own) + list(fresh)
+
+        return _check_existing_candidate(bt, bank_gl, scope, query)
+
+
+def _check_existing_candidate(bt, bank_gl, scope, query):
     """Boolean-only raw checks deliberately include hidden accounting candidates.
 
     A restricted service user must not create a second booking merely because
@@ -149,7 +190,7 @@ def _existing_candidate(bt, bank_gl, scope):
     if invoice_refs(bt.description) or invoice_refs(bt.description, "Purchase Invoice"):
         return "INVOICE_REFERENCE"
     for doctype, title in (("Customer", "customer_name"), ("Supplier", "supplier_name")):
-        for party in frappe.db.sql(f"select name, {title}, bank_names from `tab{doctype}` for update", as_dict=True):
+        for party in query(f"select name, {title}, bank_names from `tab{doctype}`", as_dict=True):
             names = {party.name, party.get(title)} | set((party.bank_names or "").splitlines())
             if any(n and mentions(bt.description, n) for n in names):
                 return "PARTY_CANDIDATE"
@@ -159,7 +200,7 @@ def _existing_candidate(bt, bank_gl, scope):
         return "PAYMENT_PROCESSOR"
     params = {**scope, "bank": bt.bank_account, "gl": bank_gl, "amount": amount,
               "date": bt.date, "money_in": int(flt(bt.deposit) > 0), "name": bt.name}
-    payments = frappe.db.sql(
+    payments = query(
         """
         select pe.name from `tabPayment Entry` pe
         where pe.docstatus = 1 and pe.company = %(company)s and abs(datediff(pe.posting_date, %(date)s)) <= 7
@@ -167,12 +208,12 @@ def _existing_candidate(bt, bank_gl, scope):
             or (%(money_in)s = 0 and abs(pe.paid_amount - %(amount)s) < 0.005))
           and not exists (select 1 from `tabBank Transaction Payments` p join `tabBank Transaction` b on b.name=p.parent
                            where p.payment_document='Payment Entry' and p.payment_entry=pe.name and b.docstatus=1)
-        limit 1 for update
+        limit 1
         """, params,
     )
     if payments:
         return "EXISTING_PAYMENT"
-    journals = frappe.db.sql(
+    journals = query(
         """
         select je.name from `tabJournal Entry` je join `tabJournal Entry Account` a on a.parent=je.name
         where je.docstatus=1 and je.company=%(company)s and a.account=%(gl)s
@@ -181,26 +222,26 @@ def _existing_candidate(bt, bank_gl, scope):
             or (%(money_in)s = 0 and abs(a.credit_in_account_currency - %(amount)s) < 0.005))
           and not exists (select 1 from `tabBank Transaction Payments` p join `tabBank Transaction` b on b.name=p.parent
                            where p.payment_document='Journal Entry' and p.payment_entry=je.name and b.docstatus=1)
-        limit 1 for update
+        limit 1
         """, params,
     )
     if journals:
         return "EXISTING_JOURNAL"
-    transfers = frappe.db.sql(
+    transfers = query(
         """
         select bt.name from `tabBank Transaction` bt join `tabBank Account` ba on ba.name=bt.bank_account
         where bt.docstatus=1 and ba.company=%(company)s and ba.is_company_account=1
           and bt.bank_account != %(bank)s and bt.currency=%(currency)s
           and abs(bt.unallocated_amount - %(amount)s) < 0.005 and abs(datediff(bt.date, %(date)s)) <= 5
           and ((%(money_in)s=1 and abs(bt.withdrawal - %(amount)s) < 0.005)
-            or (%(money_in)s=0 and abs(bt.deposit - %(amount)s) < 0.005)) limit 1 for update
+            or (%(money_in)s=0 and abs(bt.deposit - %(amount)s) < 0.005)) limit 1
         """, params,
     )
     if transfers:
         return "TRANSFER_CANDIDATE"
     for doctype in ("Sales Invoice", "Purchase Invoice"):
-        if frappe.db.sql(f"select name from `tab{doctype}` where docstatus=1 and company=%(company)s "
-                         "and currency=%(currency)s and abs(outstanding_amount - %(amount)s)<0.005 limit 1 for update", params):
+        if query(f"select name from `tab{doctype}` where docstatus=1 and company=%(company)s "
+                         "and currency=%(currency)s and abs(outstanding_amount - %(amount)s)<0.005 limit 1", params):
             return "INVOICE_CANDIDATE"
     return None
 
