@@ -235,6 +235,8 @@ correctness; the Bench tests need a real Frappe/ERPNext installation.
 
 ## Payout funding check
 
+[View screenshots of the funding warning, approval review, and bank evidence form](docs/screenshots/README.md). These local UI previews use sample data and the actual funding renderer; they are not live ERPNext captures.
+
 Before sending money, an Accounts Manager or System Manager can use **Review payout funding** on a saved draft supplier Payment Entry. The supplier payout dialog also shows the funding check when its bank account changes. Its frozen preparation preview includes the funding assessment, so changes to bank evidence or reservations require a new review before credit reconciliation. Preparing a draft does not approve a transfer.
 
 The check separates two questions:
