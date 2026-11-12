@@ -348,9 +348,20 @@ class TestRealBankAutomation(unittest.TestCase):
         self.assertEqual(_existing_candidate(line, self.fixture["bank_gl"], {"company": self.fixture["company"], "currency": "USD"}), "EXISTING_JOURNAL")
 
 
-def run_real_tests():
+def run_real_tests(include_api=False, include_funding=False, include_health=False):
     _guard()
-    suite = unittest.defaultTestLoader.loadTestsFromTestCase(TestRealBankAutomation)
+    modules = [__name__]
+    if include_api:
+        modules += ["books_assistant.tests.test_billing_api", "books_assistant.tests.test_integration_transactions",
+                    "books_assistant.tests.test_finance_synthetic", "books_assistant.tests.test_bank_discovery_transactions",
+                    "books_assistant.tests.test_bank_supplier_permissions", "books_assistant.tests.test_read_api_permissions"]
+    if include_funding:
+        modules.append("books_assistant.tests.test_funding_synthetic")
+    if include_health:
+        if "books_health" not in frappe.get_installed_apps():
+            raise AssertionError("Install Books Health before requesting its real tests")
+        modules.append("books_health.tests.test_api_synthetic")
+    suite = unittest.defaultTestLoader.loadTestsFromNames(modules)
     previous = frappe.flags.in_test
     frappe.flags.in_test = True
     try:

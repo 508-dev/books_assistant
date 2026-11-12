@@ -194,3 +194,10 @@ rejected by MariaDB's read-only transaction mode.
 The runner temporarily enables automation only on its guarded synthetic site,
 rolls back ordinary cases, and removes its exact committed concurrency fixtures
 and restores settings afterward. It does not enable automation on another site.
+
+After integrating the funding feature, run the combined fixture-interaction
+suite in one process (include Health only when installed):
+
+```sh
+bench --site <test-site> execute books_assistant.tests.test_bank_automation_site.run_real_tests --kwargs '{"include_api":1,"include_funding":1,"include_health":1}'
+```
