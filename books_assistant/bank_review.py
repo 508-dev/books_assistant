@@ -417,11 +417,12 @@ def journal_from_line(bank_transaction, account):
     from erpnext.accounts.doctype.bank_reconciliation_tool.bank_reconciliation_tool import create_journal_entry_bts
 
     bt = frappe.db.get_value("Bank Transaction", bank_transaction, ["date", "description"], as_dict=True)
+    date = str(bt.date)  # ERPNext 15.12x type-checks this as text
     create_journal_entry_bts(
         bank_transaction,
         reference_number=(bt.description or bank_transaction)[:140],
-        reference_date=bt.date,
-        posting_date=bt.date,
+        reference_date=date,
+        posting_date=date,
         entry_type="Bank Entry",
         second_account=account,
     )
