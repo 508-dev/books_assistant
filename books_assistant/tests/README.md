@@ -156,3 +156,48 @@ ledger snapshots afterward (including IDs, links and timestamps). It verifies
 new funding tables/fields and default freshness, then confirms a deliberate
 freshness override survives repeated migration. Do not substitute a production
 site or drop an existing funding schema to imitate an upgrade.
+
+## Bank automation migration and real database suite
+
+The bank automation feature adds a guarded suite in
+`books_assistant.tests.test_bank_automation_site`. Use the isolated environment
+above with both `books_assistant_synthetic_site=1` and
+`books_assistant_transaction_tests=1`. It runs actual ERPNext journals, bank
+reconciliation and GL posting without mocks or provider calls.
+
+To verify the upgrade from the API-only schema, copy that test module into the
+API-only app, then run `seed_pre_upgrade` before switching app source. It seeds
+three bank transactions, three submitted journals, six GL rows and one ordinary
+Bank Rule. After switching to the feature source:
+
+```sh
+bench --site <test-site> migrate
+bench --site <test-site> execute books_assistant.tests.test_bank_automation_site.assert_upgrade
+bench --site <test-site> migrate
+bench --site <test-site> execute books_assistant.tests.test_bank_automation_site.assert_upgrade
+bench --site <test-site> execute books_assistant.tests.test_bank_automation_site.run_real_tests
+```
+
+The upgrade assertions preserve source documents, ledger entries, timestamps
+and old rule settings; create the provenance schema; and verify that automatic
+booking stays off. The strict runner raises on failures, errors **or skips**.
+Its thirteen tests cover real learning, booking/retry/provenance, generated-history
+exclusion, alternate-prefix conflicts, cancelled evidence, disabled rules and
+amount limits, outer rollback, nonfinance denial and read-only provenance.
+The scheduled path books as a configured Accounts Manager and restores its caller.
+Separate REPEATABLE READ connections verify exactly one booking under duplicate
+workers and detection of a blocker committed after the caller's snapshot. A
+concurrent customer update proves that blocker scans do not lock unrelated
+party records; attempted writes through the separate blocker connection are
+rejected by MariaDB's read-only transaction mode.
+
+The runner temporarily enables automation only on its guarded synthetic site,
+rolls back ordinary cases, and removes its exact committed concurrency fixtures
+and restores settings afterward. It does not enable automation on another site.
+
+After integrating the funding feature, run the combined fixture-interaction
+suite in one process (include Health only when installed):
+
+```sh
+bench --site <test-site> execute books_assistant.tests.test_bank_automation_site.run_real_tests --kwargs '{"include_api":1,"include_funding":1,"include_health":1}'
+```

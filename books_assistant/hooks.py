@@ -43,5 +43,8 @@ doc_events = {
 
 scheduler_events = {
     # Catches payments applied without a new Payment Entry (e.g. Payment Reconciliation).
-    "hourly": ["books_assistant.holds.release_paid_holds"],
+    "hourly": [
+        "books_assistant.holds.release_paid_holds",
+        "books_assistant.bank_automation.run_scheduled",
+    ],
 }

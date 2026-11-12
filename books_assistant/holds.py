@@ -5,11 +5,15 @@ from frappe import _
 
 
 def release_after_payment(doc, method=None):
-    """After a payment or journal entry. Releasing is never allowed to stop the payment being recorded; the
-    hourly run catches anything missed."""
+    """Isolate ordinary release failures; aborted database transactions must retry.
+
+    The hourly run catches held bills missed by ordinary release errors.
+    """
     frappe.db.savepoint("release_holds")
     try:
         release_paid_holds()
+    except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+        raise
     except Exception:
         frappe.db.rollback(save_point="release_holds")
         frappe.log_error("Releasing held bills failed", reference_doctype=doc.doctype, reference_name=doc.name)
