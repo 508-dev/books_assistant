@@ -210,3 +210,38 @@ class TestNeverBlocks(unittest.TestCase):
                 "DocType", ("Automation Settings",)) else real_exists(dt, *a, **k)), \
                 patch("frappe.get_single", side_effect=AssertionError("must not open the settings")):
             setup.initialise_settings()
+
+
+class TestFrontingWarning(unittest.TestCase):
+    """The "client hasn't paid" warning shows before money is sent, not only at submit."""
+
+    def setUp(self):
+        frappe.set_user("Administrator")
+        project, client = frappe.get_all("Project", filters={"status": "Open", "customer": ["is", "set"]},
+                                         fields=["name", "customer"], as_list=True, limit=1)[0]
+        self.si = invoice(client, project=project)
+        self.si.db_set({"docstatus": 1, "outstanding_amount": self.si.grand_total})  # submitted and unpaid
+        supplier = frappe.get_all("Supplier", pluck="name", limit=1)[0]
+        self.bill = frappe.get_doc({
+            "doctype": "Purchase Invoice", "supplier": supplier, "project": project, "posting_date": today(),
+            "items": [{"item_code": br.PURCHASE_ITEM, "qty": 10, "rate": 50, "project": project}],
+        }).insert()
+
+    def tearDown(self):
+        frappe.db.rollback()
+
+    def test_warns_while_the_client_invoice_is_unpaid(self):
+        from books_assistant import pay_supplier
+
+        warnings = pay_supplier.fronting_warnings([self.bill.name])
+        self.assertTrue(any(self.si.name in w and "fronts" in w for w in warnings), warnings)
+        refs = [{"reference_doctype": "Purchase Invoice", "reference_name": self.bill.name}]
+        self.assertEqual(pay_supplier.payment_warnings(frappe.as_json(refs)), warnings)
+        self.si.db_set("outstanding_amount", 0)
+        self.assertFalse(any(self.si.name in w for w in pay_supplier.fronting_warnings([self.bill.name])))
+
+    def test_switched_off_with_the_check(self):
+        from books_assistant import pay_supplier
+
+        with patch.dict(frappe.conf, {"erp_rules_disabled_checks": ["ClientPaidCheck"]}):
+            self.assertEqual(pay_supplier.fronting_warnings([self.bill.name]), [])

@@ -16,6 +16,7 @@ app_include_js = ["/assets/books_assistant/js/pay_supplier.js"]
 doctype_js = {
     "Supplier": "public/js/supplier.js",
     "Sales Invoice": "public/js/sales_invoice.js",
+    "Payment Entry": "public/js/payment_entry.js",
 }
 doctype_list_js = {"Purchase Invoice": "public/js/purchase_invoice_list.js"}
 
