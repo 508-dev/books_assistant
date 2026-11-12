@@ -29,6 +29,11 @@ class BankRule(Document):
             part.strip() for part in (self.description_contains or "").split("|") if part.strip()
         )
 
+    def specificity(self, transaction):
+        """Length of the longest of this rule's words that appears in the bank description."""
+        return max((len(part.strip()) for part in self.description_contains.split("|")
+                    if part.strip() and keyword_in(part, transaction.description)), default=0)
+
     def matches(self, transaction, bank_account):
         """Whether this rule applies to a Bank Transaction (as a dict)."""
         amount = flt(transaction.deposit) or flt(transaction.withdrawal)

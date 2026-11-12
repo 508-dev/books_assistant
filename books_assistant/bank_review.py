@@ -319,15 +319,19 @@ class Context:
         }
 
     def _rule(self, bt):
-        for rule in self.rules:
-            if rule.matches(bt, bt.bank_account):
-                return {
-                    "kind": "rule",
-                    "confidence": HIGH if rule.times_used >= 2 else CHECK,
-                    "summary": _("Rule “{0}”: book to {1}").format(rule.name, rule.account),
-                    "rule": rule.name,
-                    "account": rule.account,
-                }
+        """The most specific matching rule: the longest matched words first (so "GOOGLE CLOUD" beats
+        "GOOGLE"), then the most used."""
+        matched = [r for r in self.rules if r.matches(bt, bt.bank_account)]
+        matched.sort(key=lambda r: (-r.specificity(bt), -(r.times_used or 0)))
+        if matched:
+            rule = matched[0]
+            return {
+                "kind": "rule",
+                "confidence": HIGH if rule.times_used >= 2 else CHECK,
+                "summary": _("Rule “{0}”: book to {1}").format(rule.name, rule.account),
+                "rule": rule.name,
+                "account": rule.account,
+            }
         return None
 
     def _hint(self, bt, full):

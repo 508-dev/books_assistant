@@ -128,6 +128,8 @@ def new_payment(supplier, bills, bank_gl):
     total = flt(sum(b.outstanding_amount for b in bills), 2)
     pe.paid_amount = pe.received_amount = total
     pe.paid_from = bank_gl
+    # ERPNext fills Company Bank Account with the default bank; make it the one actually paid from.
+    pe.bank_account = frappe.db.get_value("Bank Account", {"account": bank_gl, "is_company_account": 1}, "name")
     pe.posting_date = pe.reference_date = today()
     pe.reference_no = payout_reference(bank_gl, supplier)
     return pe
