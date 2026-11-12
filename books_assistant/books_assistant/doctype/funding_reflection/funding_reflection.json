@@ -1,0 +1,28 @@
+{
+ "doctype": "DocType",
+ "name": "Funding Reflection",
+ "module": "Books Assistant",
+ "engine": "InnoDB",
+ "autoname": "hash",
+ "field_order": [
+  "reservation"
+ ],
+ "fields": [
+  {
+   "fieldname": "reservation",
+   "fieldtype": "Link",
+   "label": "Reservation",
+   "options": "Payout Reservation",
+   "reqd": 1,
+   "in_list_view": 1
+  }
+ ],
+ "permissions": [],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "track_changes": 1,
+ "actions": [],
+ "links": [],
+ "states": [],
+ "istable": 1
+}

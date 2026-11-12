@@ -1,0 +1,107 @@
+{
+ "doctype": "DocType",
+ "name": "Bank Funding Snapshot",
+ "module": "Books Assistant",
+ "engine": "InnoDB",
+ "autoname": "hash",
+ "field_order": [
+  "bank_account",
+  "company",
+  "currency",
+  "balance_as_of",
+  "available_balance",
+  "pending_outflows",
+  "minimum_buffer",
+  "notes",
+  "reflected_reservations"
+ ],
+ "fields": [
+  {
+   "fieldname": "bank_account",
+   "fieldtype": "Link",
+   "label": "Bank Account",
+   "options": "Bank Account",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "balance_as_of",
+   "fieldtype": "Datetime",
+   "label": "Balance Checked At",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "available_balance",
+   "fieldtype": "Currency",
+   "label": "Bank Available Balance",
+   "options": "currency",
+   "reqd": 1,
+   "description": "Read the available balance in the bank portal. Do not use the ERP ledger balance."
+  },
+  {
+   "fieldname": "pending_outflows",
+   "fieldtype": "Currency",
+   "label": "Other Committed Payments",
+   "options": "currency",
+   "default": "0",
+   "description": "Only commitments not already deducted by the bank or listed as active payout reservations."
+  },
+  {
+   "fieldname": "minimum_buffer",
+   "fieldtype": "Currency",
+   "label": "Minimum Cash Buffer",
+   "options": "currency",
+   "default": "0"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Evidence / Notes",
+   "reqd": 1,
+   "description": "Where you checked the balance. Confirm that any reflected reservations below are deducted in it."
+  },
+  {
+   "fieldname": "reflected_reservations",
+   "fieldtype": "Table",
+   "label": "Payouts Already Reflected in This Balance",
+   "options": "Funding Reflection",
+   "description": "Active reservations stay deducted until you explicitly confirm they are reflected in a newer bank balance."
+  }
+ ],
+ "permissions": [
+  {
+   "role": "Accounts Manager",
+   "read": 1,
+   "report": 1,
+   "create": 1
+  },
+  {
+   "role": "System Manager",
+   "read": 1,
+   "report": 1,
+   "create": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "track_changes": 1,
+ "actions": [],
+ "links": [],
+ "states": []
+}
