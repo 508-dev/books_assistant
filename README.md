@@ -1,6 +1,6 @@
 # books_assistant
 
-Prepares routine bookkeeping in ERPNext so a person only has to approve it. Nothing is booked until someone does.
+Prepares routine bookkeeping in ERPNext for approval, with optional automatic booking of tightly scoped recurring bank rules.
 
 - [Bank Review](#bank-review): suggested matches for every bank line, approved in bulk.
 - [Pay supplier](#pay-supplier): one payment for everything owed to a supplier, after applying their credit.
@@ -31,6 +31,18 @@ Suggestions, most preferred first:
 - **Bank names:** it records how parties appear on bank statements (e.g. a payee's name in another script, or a company name that differs from the ERPNext record) in a new **Names on Bank Statements** field on Supplier and Customer. Names that appeared for more than one party are skipped, as are card purchases and payment services (Wise, Intuit, Venmo…).
 
 Existing rules and names are kept, so it's safe to run again.
+
+### Automatic learning and booking
+
+Bank automation is opt-in. In **Automation Settings**, a System Manager chooses an enabled **Bank Automation User**, then enables **Learn Bank Rules Automatically**, **Book Approved Bank Rules Automatically**, or both. Scheduled work runs hourly with that user's ERP permissions. Both switches default to off. A run handles at most 100 bank lines; switching booking off stops subsequent runs, and saving the switch can wait for an active batch to finish.
+
+Learning uses reconciled expense/income history to suggest recurring merchant categories. It requires three distinct bank transactions across at least two dates, consistent company, currency, bank account, direction and destination account, within 180 days, with the latest evidence no older than 60 days. The suggested rule stores the source transactions and observed amount range. Existing and disabled rules are preserved. Usage counts do not establish learning confidence.
+
+Automatic booking additionally requires explicitly enabling **Auto Book** on each reviewed Bank Rule and setting positive minimum and maximum amounts. Review the evidence before authorizing a rule: older history may predate provenance tracking. Automatic execution never widens the limits. Conflicting history, competing categories, amounts outside the limits, stale evidence, partial reconciliation, and existing payment/invoice/transfer candidates stay in Bank Review.
+
+The initial automatic path handles two-leg recurring expense/income journals only. Customer and supplier payments, transfers, holds, split journals, tax postings and foreign currencies require review. The supported company/currency scope follows finance API v1. The general queue's **Confident** label alone never authorizes automatic booking.
+
+Every rule-created journal is recorded in **Bank Rule Booking**, including manually approved rule actions. Automatic records retain the source transaction, rule, evidence, actor and resulting journal. Rule-generated journals are excluded from later learning, including when matched to another bank line. Source and rule locks, live validation, and one transaction for booking/reconciliation/audit protect retries and duplicate workers. Correct an incorrect submitted entry through ERPNext's normal cancellation and amendment process.
 
 ## Pay supplier
 
