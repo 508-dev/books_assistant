@@ -9,8 +9,9 @@ import re
 
 import frappe
 from frappe import _
-from frappe.utils import add_days, now_datetime, validate_email_address
+from frappe.utils import add_days, cint, now_datetime, validate_email_address
 
+from books_assistant.integration import check_document, lock_documents
 from books_assistant.setup import BILLING_APPROVER
 
 DEFAULT_SUBJECT = "Invoice {{ doc.name }} from 508.dev"
@@ -29,6 +30,14 @@ BOUNCE_SUBJECT = re.compile(
 
 
 def settings():
+    if frappe.flags.get("books_assistant_billing_locked"):
+        # Locking reads must also provide the values used by execution under REPEATABLE READ.
+        values = dict(frappe.db.sql("select field, value from `tabSingles` where doctype = %s "
+                                    "order by field for update", "Automation Settings"))
+        doc = frappe.get_doc({"doctype": "Automation Settings", **values})
+        doc.send_invoice_emails = cint(doc.send_invoice_emails)
+        doc.hold_engineer_bills = cint(doc.hold_engineer_bills)
+        return doc
     return frappe.get_cached_doc("Automation Settings")
 
 
@@ -44,33 +53,53 @@ def split_emails(text):
 
 def recipients(doc):
     """(to, cc) for a Sales Invoice."""
-    customer = frappe.db.get_value("Customer", doc.customer, ["invoice_to", "invoice_cc", "email_id"], as_dict=True) or {}
-    to = split_emails(customer.get("invoice_to")) or split_emails(doc.contact_email) or _contact_emails(doc.customer)
+    details = recipient_details(doc)
+    return details["to"], details["cc"]
+
+
+def recipient_details(doc):
+    """Resolve the existing recipient order and identify only the Contact actually used."""
+    customer = (check_document("Customer", doc.customer) if frappe.flags.get("books_assistant_billing_locked") else
+                frappe.db.get_value("Customer", doc.customer, ["invoice_to", "invoice_cc", "email_id"], as_dict=True) or {})
+    to = split_emails(customer.get("invoice_to")) or split_emails(doc.contact_email)
+    contact = None
+    if not to:
+        contact, to = _contact_details(doc.customer)
     if not to:
         to = split_emails(customer.get("email_id"))
     cc = split_emails(customer.get("invoice_cc")) + split_emails(settings().always_cc)
     to_lower = {t.lower() for t in to}
-    return to, [c for c in dict.fromkeys(cc) if c.lower() not in to_lower]
+    return {"to": to, "cc": [c for c in dict.fromkeys(cc) if c.lower() not in to_lower], "contact": contact}
 
 
 def _contact_emails(customer):
+    return _contact_details(customer)[1]
+
+
+def _contact_details(customer):
     rows = frappe.db.sql(
         """
-        select c.email_id from `tabContact` c
+        select c.name, c.email_id from `tabContact` c
         join `tabDynamic Link` dl on dl.parent = c.name and dl.parenttype = 'Contact'
         where dl.link_doctype = 'Customer' and dl.link_name = %s and ifnull(c.email_id, '') != ''
         order by c.is_billing_contact desc, c.is_primary_contact desc, c.modified desc
         limit 1
-        """,
+        """ + (" for update" if frappe.flags.get("books_assistant_billing_locked") else ""),
         customer,
     )
-    return split_emails(rows[0][0]) if rows else []
+    emails = split_emails(rows[0][1]) if rows else []
+    if emails and frappe.flags.get("books_assistant_billing_locked"):
+        lock_documents([("Contact", rows[0][0])])
+        check_document("Contact", rows[0][0])
+    return (rows[0][0], emails) if emails else (None, [])
 
 
 def print_format(doc):
     """The customer's own layout, else the timesheet layout for invoices with hours, else the default."""
     s = settings()
-    chosen = frappe.db.get_value("Customer", doc.customer, "invoice_print_format")
+    chosen = (check_document("Customer", doc.customer).get("invoice_print_format")
+              if frappe.flags.get("books_assistant_billing_locked") else
+              frappe.db.get_value("Customer", doc.customer, "invoice_print_format"))
     if not chosen and doc.get("timesheets") and s.timesheet_print_format:
         chosen = s.timesheet_print_format
     return chosen or s.invoice_print_format or None
@@ -83,16 +112,24 @@ def _render(template, default, doc):
 def on_submit(doc, method):
     """Email the invoice when a Billing Approver submits it. A failure never stops the invoice being submitted:
     it's noted on the invoice, which then shows under "never emailed" in Automation Settings."""
+    doc.flags.books_assistant_email_result = {"state": "not_queued"}
     if doc.is_return or BILLING_APPROVER not in frappe.get_roles():
         return
     frappe.db.savepoint("invoice_email")
     try:
         if not settings().send_invoice_emails:
+            doc.flags.books_assistant_email_result = {"state": "disabled"}
             return
-        send(doc)
+        doc.check_permission("email")
+        communication = send(doc)
+        doc.flags.books_assistant_email_result = ({"state": "queued", "communication_id": communication}
+                                                 if communication else {"state": "missing_recipient"})
+    except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+        raise
     except Exception as e:
         frappe.db.rollback(save_point="invoice_email")
         frappe.clear_last_message()
+        doc.flags.books_assistant_email_result = {"state": "failed", "error_code": "INVOICE_EMAIL_FAILED"}
         reason = frappe.utils.strip_html(str(e)) or repr(e)
         frappe.log_error(f"Invoice email for {doc.name} failed", reference_doctype=doc.doctype, reference_name=doc.name)
         doc.add_comment("Comment", _("Not emailed: {0}. Use Email Invoice to send it.").format(reason))
@@ -100,7 +137,7 @@ def on_submit(doc, method):
                         alert=True)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def email_defaults(sales_invoice):
     """Recipients, subject, message and layout to prefill the Email Invoice dialog."""
     doc = frappe.get_doc("Sales Invoice", sales_invoice)
@@ -141,7 +178,8 @@ def send(doc):
         print_format=print_format(doc),
         print_letterhead=True,
     )
-    frappe.msgprint(_("Emailed {0} to {1}").format(doc.name, ", ".join(to)), alert=True, indicator="green")
+    frappe.msgprint(_("Queued invoice email for {0} to {1}").format(doc.name, ", ".join(to)),
+                    alert=True, indicator="green")
     return result.get("name")
 
 

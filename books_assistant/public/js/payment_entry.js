@@ -11,6 +11,7 @@ books_assistant.show_fronting = frappe.utils.debounce(function (frm) {
 	frappe
 		.call({
 			method: "books_assistant.pay_supplier.payment_warnings",
+			type: "GET",
 			args: { references: refs.map((r) => ({ reference_doctype: r.reference_doctype, reference_name: r.reference_name })) },
 		})
 		.then(({ message }) => {

@@ -46,6 +46,7 @@ class BankReview {
 		frappe
 			.call({
 				method: "books_assistant.bank_review.get_queue",
+				type: "GET",
 				args: { bank_account: this.bank_account.get_value() || null },
 				freeze: true,
 				freeze_message: __("Working out suggestions…"),
@@ -122,21 +123,26 @@ class BankReview {
 			frappe.msgprint(__("Select the lines to approve first."));
 			return;
 		}
-		frappe.confirm(
-			__("Approve {0} line(s)? Each one creates or links the entry shown in its suggestion.", [names.length]),
-			() =>
-				frappe
-					.call({
-						method: "books_assistant.bank_review.approve",
-						args: { bank_transactions: names },
-						freeze: true,
-						freeze_message: __("Approving…"),
-					})
-					.then(({ message }) => {
-						this.show_results(message || []);
-						this.load();
-					})
-		);
+		const selected = this.rows.filter((row) => names.includes(row.bank_transaction));
+		const expected_fingerprints = Object.fromEntries(selected.map((row) => [row.bank_transaction, row.fingerprint]));
+		frappe.call({
+			method: "books_assistant.bank_review.preview_approval",
+			args: { bank_transactions: names, expected_fingerprints, bank_account: this.bank_account.get_value() || null },
+			freeze: true,
+		}).then(({ message: frozen }) => {
+			const request_id = crypto.randomUUID();
+			frappe.confirm(
+				__("Approve {0} line(s)? Each one creates or links the entry shown in its suggestion.", [names.length]),
+				() => frappe.call({
+					method: "books_assistant.bank_review.approve",
+					args: { preview_id: frozen.preview_id, request_id },
+					freeze: true, freeze_message: __("Approving…"),
+				}).then(({ message }) => {
+					this.show_results(message.results || []);
+					this.load();
+				})
+			);
+		});
 	}
 
 	show_results(results) {

@@ -14,11 +14,12 @@ books_assistant.fronting_html = fronting;
 
 // Shows what a supplier is owed, with any earlier credit, then applies the credit and opens a draft payment.
 books_assistant.pay_supplier = function (supplier, invoices) {
-	frappe
-		.call({ method: "books_assistant.pay_supplier.preview", args: { supplier, invoices: invoices || null } })
+	const selection = invoices === undefined ? { all_eligible: true } : { invoices };
+	return frappe
+		.call({ method: "books_assistant.pay_supplier.preview", type: "GET", args: { supplier, ...selection } })
 		.then(({ message: p }) => {
 			const esc = frappe.utils.escape_html;
-			const money = (v) => format_currency(v, "USD");
+			const money = (v) => format_currency(v, p.currency);
 			const link = (doctype, name) =>
 				`<a href="/app/${frappe.router.slug(doctype)}/${encodeURIComponent(name)}">${esc(name)}</a>`;
 			const held = p.held.length
@@ -53,6 +54,10 @@ books_assistant.pay_supplier = function (supplier, invoices) {
 						money(p.credit_to_apply),
 				  ])}</p>`
 				: "";
+			let pending = null;
+			let in_flight = false;
+			let reviewing = false;
+			const primary_label = p.to_pay > 0 ? __("Prepare payment") : __("Apply credit");
 			const dialog = new frappe.ui.Dialog({
 				title: __("Pay {0}", [supplier]),
 				size: "large",
@@ -72,35 +77,76 @@ books_assistant.pay_supplier = function (supplier, invoices) {
 						fieldtype: "Link",
 						options: "Account",
 						default: p.bank_account,
-						reqd: 1,
+						reqd: p.to_pay > 0,
+						hidden: p.to_pay <= 0,
 						get_query: () => ({ filters: { account_type: "Bank", is_group: 0 } }),
 					},
 				],
-				primary_action_label: p.to_pay > 0 ? __("Prepare payment") : __("Apply credit"),
-				primary_action: (values) =>
-					frappe
-						.call({
-							method: "books_assistant.pay_supplier.prepare",
-							args: { supplier, invoices: invoices || null, bank_account: values.bank_account },
-							freeze: true,
-						})
-						.then(({ message }) => {
-							dialog.hide();
-							if (message.payment_entry) {
-								const payment = frappe.model.sync(message.payment_entry)[0];
-								frappe.set_route("Form", payment.doctype, payment.name);
-								frappe.show_alert({
-									message: __("Check the payment, then save and submit."),
-									indicator: "blue",
-								});
-							} else {
-								frappe.show_alert({
-									message: __("Applied {0} of credit; nothing left to pay.", [money(message.credit_applied)]),
-									indicator: "green",
-								});
-							}
-						}),
+				primary_action_label: primary_label,
+				primary_action: prepare_preview,
 			});
+
+			function send_pending() {
+				if (!pending || in_flight) return;
+				in_flight = true;
+				return frappe.call({
+					method: "books_assistant.pay_supplier.prepare",
+					args: { preview_id: pending.preview_id, request_id: pending.request_id }, freeze: true,
+				}).then(({ message }) => {
+					in_flight = false;
+					if (message?.status !== "prepared" || typeof message.operation_id !== "string") {
+						frappe.msgprint(__("The result is uncertain. Use Retry result to retrieve the original operation before starting another payment."));
+						return;
+					}
+					pending = null;
+					dialog.hide();
+					if (message.payment_entry) {
+						const payment = frappe.model.sync(message.payment_entry)[0];
+						frappe.set_route("Form", payment.doctype, payment.name);
+						frappe.show_alert({ message: __("Check the payment, then save and submit."), indicator: "blue" });
+					} else {
+						frappe.show_alert({ message: __("Applied {0} of credit; nothing left to pay.", [money(message.credit_applied)]), indicator: "green" });
+					}
+				}, (error) => {
+					in_flight = false;
+					const code = error?.responseJSON?.error_code;
+					if (["PREVIEW_EXPIRED", "PREVIEW_STALE"].includes(code)) {
+						// The server checked the request ledger first and confirmed no execution.
+						pending = null;
+						dialog.set_primary_action(primary_label, prepare_preview);
+					} else {
+						// A timeout can follow a committed credit allocation. Preserve both IDs
+						// until the original operation result has been retrieved.
+						frappe.msgprint(__("The result is uncertain. Use Retry result to retrieve the original operation before starting another payment."));
+					}
+				});
+			}
+
+			function prepare_preview(values) {
+				if (pending) return send_pending();
+				if (reviewing) return;
+				reviewing = true;
+				return frappe.call({
+					method: "books_assistant.pay_supplier.preview_preparation",
+					args: { supplier, ...selection, company: p.company, bank_account: values.bank_account },
+					freeze: true,
+				}).then(({ message: frozen }) => {
+					const reviewed = frozen.snapshot;
+					const documents = reviewed.bills.map((b) => esc(b.name)).join(", ");
+					const consequence = reviewed.to_pay > 0
+						? __("Apply {0} of credit to {1}, then prepare an unsaved payment for {2} from {3}? This records credit allocations; no bank transfer is made.", [
+							money(reviewed.credit_to_apply), documents, money(reviewed.to_pay), esc(reviewed.bank_account),
+						])
+						: __("Apply {0} of credit to {1}? No payment document or bank transfer will be created.", [money(reviewed.credit_to_apply), documents]);
+					frappe.confirm(consequence, () => {
+						reviewing = false;
+						pending = { preview_id: frozen.preview_id, request_id: crypto.randomUUID() };
+						dialog.set_primary_action(__("Retry result"), send_pending);
+						return send_pending();
+					}, () => { reviewing = false; });
+				}, () => { reviewing = false; });
+			}
+
 			dialog.show();
 		});
 };

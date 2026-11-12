@@ -83,7 +83,7 @@ When a **Billing Approver** submits a client invoice, it's emailed with its PDF 
 
 Both fields take several addresses, separated by commas or new lines.
 
-**PDF layout:** the customer's **Invoice Print Format** if set. Otherwise the timesheet layout when the invoice has timesheet hours, otherwise the default. Both defaults are chosen in Automation Settings.
+**PDF layout:** the customer's **Invoice Print Format** if set. Otherwise the timesheet layout when the invoice has timesheet hours, otherwise the default. Both defaults are chosen in Automation Settings. New installations use ERPNext's standard layout until a format is configured; upgrades preserve existing selections and intentional blanks.
 
 A failed email never stops the invoice being submitted: it's noted on the invoice and listed in Automation Settings.
 
@@ -124,6 +124,111 @@ bench --site <site> run-tests --app books_assistant
 
 The matching tests are self-contained. The others run against the site's own data (use a copy of production), with made-up customers and addresses where they need them, and roll back everything they create. No email is sent.
 
+For a test path that requires no production export, see
+[Synthetic ERP verification](books_assistant/tests/README.md). It includes a real
+old-to-new migration, repeat migration, and guarded accounting/concurrency suites.
+
 ## License
 
 MIT, see [license.txt](license.txt).
+
+## Integration API (v1)
+
+Custom app methods are callable through Frappe's authenticated HTTP API. The
+ERP session user is the actor: use that user's API/OAuth credentials and ERP
+permissions. A Discord ID or an `actor` argument is never delegated authority.
+A trusted backend must verify its Discord-to-ERP identity mapping before enabling
+these finance actions. Keep credentials on the backend and out of Discord.
+
+This version supports exactly one Company with USD books and no foreign-currency
+financial records. Unsupported scope fails explicitly before accounting work.
+Read endpoints respect the authenticated user's record permissions. Results
+contain private financial information; do not publish them to shared channels.
+
+Call dotted methods at `/api/method/<method>`. Frappe wraps return values in
+`message`; errors retain its normal exception/status behavior and shared contract
+errors add a machine-readable top-level `error_code`.
+
+| Method | HTTP | Purpose |
+| --- | --- | --- |
+| `books_assistant.api.get_finance_status(company)` | GET | Visible pending billing, unmatched bank lines, overdue invoices, held bills and failed invoice emails. |
+| `books_assistant.api.get_supplier_payment_status(supplier, company)` | GET | Outstanding bills, held/eligible amounts and blocking client invoice explanations. |
+| `books_assistant.bank_review.get_queue(bank_account=None, company=None)` | GET | Suggestions with reviewed fingerprints. |
+| `books_assistant.bank_review.preview_approval(bank_transactions, expected_fingerprints, company=None, bank_account=None)` | POST | Freeze selected suggestions; reject changes since the displayed queue. |
+| `books_assistant.bank_review.approve(preview_id, request_id)` | POST | Execute the reviewed bank actions, with per-line results. |
+| `books_assistant.pay_supplier.preview(supplier, invoices=None, company=None, all_eligible=False, bank_account=None)` | GET | Read payable bills, held bills, available credits and payment side effects. |
+| `books_assistant.pay_supplier.preview_preparation(...)` | POST | Freeze the supplier preparation with the same arguments as `preview`. |
+| `books_assistant.pay_supplier.prepare(preview_id, request_id)` | POST | Apply reviewed credits and return an **unsaved** payment; no bank transfer. |
+| `books_assistant.billing_api.prepare_billing(run_id, company=None)` | POST | Prepare drafts on an existing saved Billing Run. |
+| `books_assistant.billing_api.preview_billing_approval(run_id, projects, company=None)` | POST | Freeze selected billing documents, amounts, recipients, email settings and hold effects. |
+| `books_assistant.billing_api.approve_billing(preview_id, request_id)` | POST | Submit reviewed projects and return document, hold and email results. |
+
+Selections must contain 1–100 distinct document names. Empty lists never expand
+to all documents. Supplier selection can use `all_eligible=True` explicitly;
+that option cannot be combined with an invoice list. Other operations always
+require explicit selected projects/bank lines.
+
+### Review and execute
+
+1. Read the current state and select the exact documents.
+2. POST a preview. Review the returned `snapshot`, including credit application,
+   recipients, amounts and hold consequences. Creating a preview stores approval
+   state but does not book accounting entries.
+3. POST its `preview_id` and a new unique `request_id` to the execution endpoint.
+   Previews expire after ten minutes, belong to their ERP actor/action, and are
+   single-use. Rechecking live data rejects stale previews.
+4. If the response is lost, retry the **same preview and request ID**. The durable
+   API Request ledger returns the original result without repeating accounting
+   work. Reusing a request ID for another operation is rejected. Authorization is
+   rechecked on replay, even after a successful execution.
+
+API Preview and API Request have no generic user CRUD permissions. Execution
+locks the preview, then the Company, then referenced documents. Requests/results
+and accounting changes commit together at the HTTP transaction boundary; no
+bank line commits independently. Each bank line/billing project uses a savepoint,
+so the completed operation can contain individual failures. For a new attempt at
+failed items, review a new preview and use a new request ID. Request records are
+retained as audit/retry state; do not purge them while clients may retry.
+
+Versioned preview/results contain `api_version: 1`; completed operations also
+contain `operation_id`. Billing project state is `pending`, `approved`, `failed`,
+`left_out`, or `review_required`. Display text never determines transitions.
+Invoice email results distinguish queued, disabled, missing recipient, failed,
+and previously submitted; **queued does not mean delivered**.
+
+Approval previews calculate profitability from the current selected invoice and
+bills, including applicable referral fees. This selected-document margin excludes
+earlier invoices/bills that may be included in the prepared run's period totals.
+The final confirmation labels that scope and shows current cost/margin warnings.
+
+### Upgrade and validate
+
+Run `bench --site <test-site> migrate` on a disposable copy first. This syncs the
+internal DocTypes and runs the post-sync billing-state migration. Recognized
+legacy outcomes migrate to machine state. Unknown/translated outcomes become
+`review_required` and block approval/deletion/discard: a System Manager must
+inspect the referenced invoices/bills and repair the machine state explicitly in
+an administrative console. Do not assume those hours can be billed again.
+Deploy Python and rebuilt frontend assets together; older callers using
+`approve(bank_transactions)` or `prepare(supplier)` must adopt previews and
+request IDs. The bundled ERP interface already uses the new contracts.
+
+Standalone boundary/state-machine checks (no Frappe installation):
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m unittest books_assistant.tests.test_finance_api -v
+```
+
+Also run the existing Bench suite and the new site tests before deployment:
+
+```bash
+bench --site <test-site> run-tests --app books_assistant
+```
+
+The `test_integration_transactions` module additionally needs site config
+`books_assistant_transaction_tests=1` on a disposable site: it commits temporary
+fixtures to test separate database connections, duplicate requests, request-key
+reuse, rollback and internal-record permission denial. Never enable it on a
+production site. Standalone fakes do not prove database locking or migration
+correctness; the Bench tests need a real Frappe/ERPNext installation.
