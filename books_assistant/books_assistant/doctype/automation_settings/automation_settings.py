@@ -24,6 +24,7 @@ class AutomationSettings(Document):
 
     def validate(self):
         validate_bank_automation(self)
+        validate_bank_classifier(self)
         for field in ("always_cc", "health_digest_recipients"):
             self.set(field, "\n".join(split_emails(self.get(field))))
 
@@ -94,3 +95,11 @@ def validate_bank_automation(doc):
         frappe.throw("Choose an enabled Bank Automation User before enabling bank automation.")
     if not set(frappe.get_roles(user)) & {"Accounts Manager", "System Manager"}:
         frappe.throw("The Bank Automation User needs the Accounts Manager or System Manager role.")
+
+
+def validate_bank_classifier(doc):
+    if not doc.get("bank_cloudflare_classifier_enabled"):
+        return
+    value = doc.get("bank_classifier_daily_calls")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != int(value) or not 1 <= value <= 1000:
+        frappe.throw("Daily Cloudflare Call Limit must be an integer between 1 and 1000.")

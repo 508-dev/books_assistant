@@ -19,6 +19,7 @@ class BankReview {
 		this.page.add_button(__("Select confident"), () => this.select_confident());
 		this.page.add_button(__("Refresh"), () => this.load());
 		this.page.add_menu_item(__("Learn rules and bank names from history"), () => this.learn());
+		this.page.add_menu_item(__("Benchmark local category classifier"), () => this.benchmark_classifier());
 		this.page.add_menu_item(__("Bank Rules"), () => frappe.set_route("List", "Bank Rule"));
 		this.page.add_menu_item(__("Bank Reconciliation Tool"), () =>
 			frappe.set_route("Form", "Bank Reconciliation Tool")
@@ -36,6 +37,10 @@ class BankReview {
 			const row = this.rows.find((r) => r.bank_transaction === e.currentTarget.dataset.name);
 			this.make_rule(row);
 		});
+		this.$body.on("click", ".suggest-category", (e) => {
+            const row = this.rows.find((r) => r.bank_transaction === e.currentTarget.dataset.name);
+            this.suggest_category(row);
+        });
 		this.$body.on("change", ".select-all", (e) =>
 			this.$body.find(".row-check:not(:disabled)").prop("checked", e.target.checked)
 		);
@@ -70,8 +75,9 @@ class BankReview {
 			.map((r) => {
 				const c = CONFIDENCE[r.confidence];
 				const action =
-					r.kind === "none" && r.keyword !== null
-						? `<button class="btn btn-xs btn-default make-rule" data-name="${esc(r.bank_transaction)}">${__("Make rule")}</button>`
+					r.kind === "none"
+						? `<button class="btn btn-xs btn-default make-rule" data-name="${esc(r.bank_transaction)}">${__("Make rule")}</button>
+                           <button class="btn btn-xs btn-default suggest-category" data-name="${esc(r.bank_transaction)}">${__("Suggest category")}</button>`
 						: "";
 				return `<tr data-confidence="${r.confidence}">
 					<td><input type="checkbox" class="row-check" data-name="${esc(r.bank_transaction)}" ${r.kind === "none" ? "disabled" : ""}></td>
@@ -88,7 +94,7 @@ class BankReview {
 			.join("");
 		this.$body.html(`
 			<p class="text-muted" style="margin: 12px 0">
-				${__("{0} lines: {1} confident, {2} to check, {3} need you. Nothing is booked until you approve.", [
+				${__("{0} lines: {1} confident, {2} to check, {3} need you. Review these lines before approving.", [
 					rows.length,
 					counts.high,
 					counts.check,
@@ -167,7 +173,7 @@ class BankReview {
 			fields: [
 				{
 					fieldtype: "HTML",
-					options: `<p class="text-muted">${frappe.utils.escape_html(row.description || "")}</p>`,
+					options: `<p class="text-muted">${frappe.utils.escape_html(row.description || "")}</p><p>${__("Bank")}: ${frappe.utils.escape_html(row.bank_account || "")}</p>`,
 				},
 				{
 					fieldname: "keyword",
@@ -182,6 +188,7 @@ class BankReview {
 					label: __("Book to account"),
 					fieldtype: "Link",
 					options: "Account",
+                    default: row.suggested_account || null,
 					reqd: 1,
 					get_query: () => ({
 						filters: { is_group: 0, account_type: ["not in", ["Cash", "Receivable", "Payable"]] },
@@ -193,7 +200,8 @@ class BankReview {
 				frappe
 					.call({
 						method: "books_assistant.bank_review.create_rule",
-						args: { bank_transaction: row.bank_transaction, ...values },
+						args: { bank_transaction: row.bank_transaction, ...values,
+                            ...(row.classification_fingerprint ? { expected_fingerprint: row.classification_fingerprint } : {}) },
 					})
 					.then(() => {
 						dialog.hide();
@@ -203,6 +211,36 @@ class BankReview {
 		});
 		dialog.show();
 	}
+
+
+    async suggest_category(row) {
+        const { message } = await frappe.call({
+            method: "books_assistant.bank_classification.suggest",
+            type: "POST", args: { bank_transaction: row.bank_transaction },
+            freeze: true, freeze_message: __("Checking historical categories…"),
+        });
+        if (message.status !== "suggested" || !message.account) {
+            frappe.msgprint(__("No category suggestion: {0}. Review this line manually.", [message.reason_code]));
+            return;
+        }
+        const esc = frappe.utils.escape_html;
+        frappe.confirm(
+            __("Suggested category: {0}. Source: {1}. Review a rule for future matching lines? This does not book the transaction or authorize automatic booking.",
+                [esc(message.account), esc(message.source)]),
+            () => this.make_rule({ ...row, description: message.description, keyword: message.keyword,
+                bank_account: message.bank_account, suggested_account: message.account,
+                classification_fingerprint: message.input_fingerprint }),
+        );
+    }
+
+    async benchmark_classifier() {
+        const { message } = await frappe.call({
+            method: "books_assistant.bank_classification.benchmark", type: "POST",
+            freeze: true, freeze_message: __("Replaying historical classifications locally…"),
+        });
+        frappe.msgprint({ title: __("Local classifier benchmark"),
+            message: `<pre>${frappe.utils.escape_html(JSON.stringify(message, null, 2))}</pre>`, wide: true });
+    }
 
 	learn() {
 		frappe.confirm(

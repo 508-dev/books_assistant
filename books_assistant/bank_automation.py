@@ -135,7 +135,7 @@ def evidence_still_valid(rule, observations):
             and approved.get("scope", {}).get("currency") == candidate["currency"])
 
 
-def _existing_candidate(bt, bank_gl, scope):
+def _existing_candidate(bt, bank_gl, scope, *, for_update=True):
     """Boolean-only raw checks deliberately include hidden accounting candidates.
 
     A restricted service user must not create a second booking merely because
@@ -143,13 +143,16 @@ def _existing_candidate(bt, bank_gl, scope):
     """
     from books_assistant.matching import bank_name
 
+    def query(statement, *args, **kwargs):
+        return frappe.db.sql(statement if for_update else statement.replace(" for update", ""), *args, **kwargs)
+
     amount = flt(bt.deposit) or flt(bt.withdrawal)
     if bt.get("party") or bt.get("party_type"):
         return "PARTY_TRANSACTION"
     if invoice_refs(bt.description) or invoice_refs(bt.description, "Purchase Invoice"):
         return "INVOICE_REFERENCE"
     for doctype, title in (("Customer", "customer_name"), ("Supplier", "supplier_name")):
-        for party in frappe.db.sql(f"select name, {title}, bank_names from `tab{doctype}` for update", as_dict=True):
+        for party in query(f"select name, {title}, bank_names from `tab{doctype}` for update", as_dict=True):
             names = {party.name, party.get(title)} | set((party.bank_names or "").splitlines())
             if any(n and mentions(bt.description, n) for n in names):
                 return "PARTY_CANDIDATE"
@@ -159,7 +162,7 @@ def _existing_candidate(bt, bank_gl, scope):
         return "PAYMENT_PROCESSOR"
     params = {**scope, "bank": bt.bank_account, "gl": bank_gl, "amount": amount,
               "date": bt.date, "money_in": int(flt(bt.deposit) > 0), "name": bt.name}
-    payments = frappe.db.sql(
+    payments = query(
         """
         select pe.name from `tabPayment Entry` pe
         where pe.docstatus = 1 and pe.company = %(company)s and abs(datediff(pe.posting_date, %(date)s)) <= 7
@@ -172,7 +175,7 @@ def _existing_candidate(bt, bank_gl, scope):
     )
     if payments:
         return "EXISTING_PAYMENT"
-    journals = frappe.db.sql(
+    journals = query(
         """
         select je.name from `tabJournal Entry` je join `tabJournal Entry Account` a on a.parent=je.name
         where je.docstatus=1 and je.company=%(company)s and a.account=%(gl)s
@@ -186,7 +189,7 @@ def _existing_candidate(bt, bank_gl, scope):
     )
     if journals:
         return "EXISTING_JOURNAL"
-    transfers = frappe.db.sql(
+    transfers = query(
         """
         select bt.name from `tabBank Transaction` bt join `tabBank Account` ba on ba.name=bt.bank_account
         where bt.docstatus=1 and ba.company=%(company)s and ba.is_company_account=1
@@ -199,7 +202,7 @@ def _existing_candidate(bt, bank_gl, scope):
     if transfers:
         return "TRANSFER_CANDIDATE"
     for doctype in ("Sales Invoice", "Purchase Invoice"):
-        if frappe.db.sql(f"select name from `tab{doctype}` where docstatus=1 and company=%(company)s "
+        if query(f"select name from `tab{doctype}` where docstatus=1 and company=%(company)s "
                          "and currency=%(currency)s and abs(outstanding_amount - %(amount)s)<0.005 limit 1 for update", params):
             return "INVOICE_CANDIDATE"
     return None

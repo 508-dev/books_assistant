@@ -7,6 +7,7 @@
  "field_order": [
   "status_section", "status_html",
   "bank_automation_section", "bank_auto_learn_enabled", "bank_auto_book_enabled", "bank_auto_book_user", "bank_auto_scan_after", "bank_auto_last_run_on", "bank_auto_last_summary",
+  "bank_classifier_section", "bank_local_classifier_enabled", "bank_cloudflare_classifier_enabled", "bank_classifier_daily_calls",
   "invoice_section", "send_invoice_emails", "invoice_print_format", "timesheet_print_format", "column_break_invoice", "always_cc", "email_subject", "email_body",
   "payout_section", "hold_engineer_bills", "auto_release_holds",
   "checks_section", "check_discount_reason", "check_hours_as_quantity", "check_due_date", "column_break_checks", "check_no_cash_account", "check_duplicate_payment", "check_client_paid",
@@ -22,6 +23,10 @@
   {"fieldname": "bank_auto_scan_after", "fieldtype": "Data", "label": "Last Scanned Bank Transaction", "read_only": 1, "hidden": 1},
   {"fieldname": "bank_auto_last_run_on", "fieldtype": "Datetime", "label": "Last Bank Automation Run", "read_only": 1},
   {"fieldname": "bank_auto_last_summary", "fieldtype": "Code", "options": "JSON", "label": "Last Bank Automation Summary", "read_only": 1},
+  {"fieldname": "bank_classifier_section", "fieldtype": "Section Break", "label": "Bank category suggestions"},
+  {"default": "0", "fieldname": "bank_local_classifier_enabled", "fieldtype": "Check", "label": "Enable Local Category Classifier", "description": "Suggest categories from verified historical journals using a CPU model. Suggestions require review and do not authorize bookings."},
+  {"default": "0", "fieldname": "bank_cloudflare_classifier_enabled", "fieldtype": "Check", "label": "Enable Cloudflare Category Suggestions", "description": "Allow sending bank descriptions, amounts, category names and up to 12 historical examples to Cloudflare Clef-flash when local classification abstains. Credentials stay in server environment variables."},
+  {"default": "100", "fieldname": "bank_classifier_daily_calls", "fieldtype": "Int", "label": "Daily Cloudflare Call Limit", "description": "1–1000 attempts per company/site/day, shared across users. Redis enforces an operational cap; cache resets can reset the counter. Failed requests count. This is not a provider billing limit."},
   {"fieldname": "invoice_section", "fieldtype": "Section Break", "label": "Client invoice emails"},
   {"default": "1", "description": "Email a client invoice, with its PDF, when a Billing Approver submits it (including through a Billing Run). Anyone can still send one with the Email Invoice button.", "fieldname": "send_invoice_emails", "fieldtype": "Check", "label": "Email Invoices on Approval"},
   {"default": "Sales Invoice with Bank Info", "description": "Used unless the customer has its own Invoice Print Format.", "fieldname": "invoice_print_format", "fieldtype": "Link", "label": "Default Print Format", "options": "Print Format"},

@@ -62,7 +62,7 @@ def infer_candidates(observations, today):
     return candidates
 
 
-def load_observations(scope):
+def load_observations(scope, *, history_days=HISTORY_DAYS, for_update=True, max_rows=None, bank_account=None, direction=None):
     """Only simple fully reconciled bank-to-expense/income journals are evidence.
 
     All source access is checked, and any generated rule journal is excluded by
@@ -72,7 +72,17 @@ def load_observations(scope):
     from frappe.utils import add_days, flt, today
     from books_assistant.integration import check_document, lock_documents
 
-    params = {**scope, "since": add_days(today(), -HISTORY_DAYS), "today": today()}
+    if not isinstance(history_days, int) or not 1 <= history_days <= 3650:
+        raise ValueError("history_days must be between 1 and 3650")
+    if max_rows is not None and (not isinstance(max_rows, int) or not 1 <= max_rows <= 10000):
+        raise ValueError("max_rows must be between 1 and 10000")
+    if direction not in (None, "Money in", "Money out"):
+        raise ValueError("unsupported history direction")
+    bank_filter = " and bt.bank_account = %(bank_account)s" if bank_account else ""
+    direction_filter = " and bt.deposit > 0" if direction == "Money in" else " and bt.withdrawal > 0" if direction else ""
+    suffix = " for update" if for_update else ""
+    limit = f" order by bt.date desc, bt.name limit {max_rows}" if max_rows else ""
+    params = {**scope, "since": add_days(today(), -history_days), "today": today(), "bank_account": bank_account}
     rows = frappe.db.sql(
         """
         select distinct bt.name bank_transaction, bt.description, bt.date, bt.currency, bt.deposit, bt.withdrawal,
@@ -91,8 +101,7 @@ def load_observations(scope):
         where bt.docstatus = 1 and ba.company = %(company)s and bt.currency = %(currency)s
           and bt.date between %(since)s and %(today)s
           and generated.name is null
-        for update
-        """, params, as_dict=True,
+        """ + bank_filter + direction_filter + limit + suffix, params, as_dict=True,
     )
     observations = []
     for row in rows:
@@ -112,17 +121,18 @@ def load_observations(scope):
             observations.append(rejection)
             continue
         try:
-            lock_documents([("Bank Transaction", row.bank_transaction), ("Journal Entry", row.journal),
-                            ("Bank Account", row.bank_account)])
+            if for_update:
+                lock_documents([("Bank Transaction", row.bank_transaction), ("Journal Entry", row.journal),
+                                ("Bank Account", row.bank_account)])
             check_document("Bank Transaction", row.bank_transaction, company=scope["company"], currency=scope["currency"])
             check_document("Bank Account", row.bank_account, company=scope["company"])
             journal = check_document("Journal Entry", row.journal, company=scope["company"])
-            mappings = frappe.db.sql("select name from `tabBank Transaction Payments` where parent=%s for update", (row.bank_transaction,))
-            links = frappe.db.sql("select name from `tabBank Transaction Payments` where payment_document='Journal Entry' and payment_entry=%s for update", (row.journal,))
+            mappings = frappe.db.sql("select name from `tabBank Transaction Payments` where parent=%s" + suffix, (row.bank_transaction,))
+            links = frappe.db.sql("select name from `tabBank Transaction Payments` where payment_document='Journal Entry' and payment_entry=%s" + suffix, (row.journal,))
             if len(mappings) != 1 or len(links) != 1:
                 observations.append(rejection)
                 continue
-            accounts = frappe.db.sql("select * from `tabJournal Entry Account` where parent=%s order by idx for update",
+            accounts = frappe.db.sql("select * from `tabJournal Entry Account` where parent=%s order by idx" + suffix,
                                      (row.journal,), as_dict=True)
             if (len(accounts) != 2 or journal.get("is_opening") == "Yes" or journal.get("tax_withholding_category")
                     or any(a.get("party") or a.get("party_type") or a.get("reference_type") or a.get("reference_name") for a in accounts)):
@@ -134,7 +144,8 @@ def load_observations(scope):
                 observations.append(rejection)
                 continue
             bank, contra = bank_rows[0], other_rows[0]
-            lock_documents([("Account", contra.account), ("Account", bank.account)])
+            if for_update:
+                lock_documents([("Account", contra.account), ("Account", bank.account)])
             ledger = check_document("Account", contra.account, company=scope["company"], currency=scope["currency"])
             bank_ledger = check_document("Account", bank.account, company=scope["company"], currency=scope["currency"])
             amount = flt(row.deposit) or flt(row.withdrawal)

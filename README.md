@@ -44,6 +44,34 @@ The initial automatic path handles two-leg recurring expense/income journals onl
 
 Every rule-created journal is recorded in **Bank Rule Booking**, including manually approved rule actions. Automatic records retain the source transaction, rule, evidence, actor and resulting journal. Rule-generated journals are excluded from later learning, including when matched to another bank line. Source and rule locks, live validation, and one transaction for booking/reconciliation/audit protect retries and duplicate workers. Correct an incorrect submitted entry through ERPNext's normal cancellation and amendment process.
 
+### Hybrid category suggestions
+
+For unresolved bank lines, **Suggest category** uses existing deterministic actions first, then an optional local classifier, then optional Cloudflare Clef-flash. Enable **Local Category Classifier** and/or **Cloudflare Category Suggestions** in Automation Settings. Both default off. The account suggestions are separate from executable Bank Review actions: they require review, can prefill **Make rule**, and never authorize automatic booking. A reviewed rule is scoped to the source bank account; creating it checks that the classified bank line has not changed. Automatic booking still requires the existing separate rule authorization.
+
+The local model is a bounded TF-IDF nearest-centroid classifier implemented in Python's standard library. It runs on CPU, with no GPU, model downloads, new packages or persisted pickle files. Each request trains from visible, validated historical journal classifications from the preceding 730 days. Generated rule journals, inaccessible or ambiguous source records and unsupported ledgers are excluded or veto their merchant. Scope is company/currency/bank/direction. The local scores are cosine similarities and margins, not probabilities of correctness. Each classification loads only its source bank/direction. Limits are 2,000 history rows per request, 500 training documents per scope and 8,000 features per scope; reaching a capacity limit causes abstention rather than silently dropping conflicting evidence.
+
+Cloudflare fallback uses its **hosted REST endpoint**; no Worker or model deployment is needed. Give the ERP processes `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` (with Workers AI permission), then enable the Cloudflare switch. See [.env.example](.env.example). The request sends the bank description, amount/direction/currency, permitted category labels and up to twelve same-scope historical examples. It omits bank transaction IDs, journal IDs and credentials from model context. Cloudflare's [Clef-flash documentation](https://developers.cloudflare.com/workers-ai/models/clef-flash/) describes the hosted API.
+
+Hosted requests have a five-second socket timeout, no redirects or retries, a 16 KiB request cap and a 64 KiB response cap. Unknown categories, malformed or truncated responses, errors and weak scores abstain. Returned probabilities are model estimates and have not been calibrated against these books. The **Daily Cloudflare Call Limit** defaults to 100 attempts per company/site/day, shared across users; Redis atomically reserves failed attempts too. This operational counter can reset on cache eviction/reset and is not a provider billing cap. If Redis is unavailable, hosted calls stop. Neither a provider error nor a model prediction changes accounting documents.
+
+`POST /api/method/books_assistant.bank_classification.suggest` accepts `bank_transaction` and optional `company`. It returns versioned status/source/reason codes, model/dataset/proposal hashes and a source fingerprint. Logs contain bounded machine metadata, without bank descriptions, historical text or provider error bodies. The ERP session user's finance role and record access are checked before classifying. The deterministic automatic-booking job never calls a model.
+
+#### Benchmark before enabling broader automation
+
+The Bank Review menu's **Benchmark local category classifier** calls `books_assistant.bank_classification.benchmark` and replays visible ERP history without provider calls or accounting writes. Reports compare exact-merchant history rules with the local classifier on complete held-out dates and, separately, unseen merchant groups. They show coverage, precision among suggestions, wrong counts, abstentions, timing and approximate reachable Python model memory (not process RSS). Sparse or missing data is reported explicitly. Neither result automatically changes thresholds or booking permissions.
+
+For local observation JSON, run:
+
+```bash
+python3 scripts/benchmark_bank_classifier.py observations.json
+# Explicitly opt into hosted comparison; requires the environment variables above.
+python3 scripts/benchmark_bank_classifier.py observations.json --cloudflare --max-cloudflare-calls 20
+# Synthetic mechanics check only; this does not measure ERP accuracy.
+python3 scripts/benchmark_bank_classifier.py books_assistant/tests/fixtures/bank_classifier_synthetic.json
+```
+
+Hosted comparisons use the same held-out sets and training-only examples. The call cap is shared across both splits and ranges from 1 to 100 attempts; once exhausted, remaining predictions abstain and reduce coverage. The CLI does not query ERP or load credentials from files. Input rows require `bank_transaction`, `journal`, `description`, `date`, `company`, `currency`, `bank_account`, `direction`, `account` and a positive `amount`; use verified labels and preserve source IDs to check leakage. Output contains aggregate results/category counts, not source descriptions or bank transaction IDs. Real-data and hosted performance remain unverified until run with authorized history and credentials.
+
 ## Pay supplier
 
 **Pay what we owe** on a Supplier (under *Create*), or **Pay selected bills** in the Purchase Invoice list:
@@ -225,6 +253,8 @@ Standalone boundary/state-machine checks (no Frappe installation):
 
 ```bash
 python3 -m unittest discover -s tests -v
+node tests/test_bank_classification_ui.js
+python3 -m unittest books_assistant.tests.test_bank_classifier books_assistant.tests.test_bank_classifier_eval -v
 python3 -m unittest books_assistant.tests.test_finance_api -v
 python3 -m unittest books_assistant.tests.test_bank_learning_policy books_assistant.tests.test_bank_auto_guards books_assistant.tests.test_bank_auto_execution books_assistant.tests.test_bank_automation_settings books_assistant.tests.test_bank_rule_provenance books_assistant.tests.test_bank_rule_serialization books_assistant.tests.test_matching -v
 ```

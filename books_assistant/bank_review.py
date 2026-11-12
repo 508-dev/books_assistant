@@ -521,14 +521,21 @@ def fmt(amount):
 
 
 @frappe.whitelist(methods=["POST"])
-def create_rule(bank_transaction, keyword, account):
+def create_rule(bank_transaction, keyword, account, expected_fingerprint=None):
     """Make a rule from one bank line: its direction and the words to match, booked to the account."""
     frappe.only_for(APPROVERS)
     from books_assistant.bank_api import _check_line
 
     scope = resolve_scope()
     lock_documents([("Company", scope["company"])])
+    lock_documents([("Bank Transaction", bank_transaction)])
     bt = _check_line(bank_transaction, scope)
+    if expected_fingerprint is not None:
+        from books_assistant.bank_classification import transaction_snapshot
+        from books_assistant.integration import fingerprint
+
+        if expected_fingerprint != fingerprint(transaction_snapshot(bt, scope)):
+            frappe.throw(_("This bank line changed after classification. Refresh it before creating a rule."))
     check_document("Account", account, company=scope["company"], currency=scope["currency"])
     keyword = keyword.strip()
     if not keyword:
@@ -539,6 +546,8 @@ def create_rule(bank_transaction, keyword, account):
         "description_contains": keyword,
         "direction": "Money in" if flt(bt.deposit) > 0 else "Money out",
         "account": account,
+        "bank_account": bt.bank_account,
+        "auto_book": 0,
     }).insert()
     return rule.name
 
