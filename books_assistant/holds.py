@@ -4,6 +4,17 @@ import frappe
 from frappe import _
 
 
+def release_after_payment(doc, method=None):
+    """After a payment or journal entry. Releasing is never allowed to stop the payment being recorded; the
+    hourly run catches anything missed."""
+    frappe.db.savepoint("release_holds")
+    try:
+        release_paid_holds()
+    except Exception:
+        frappe.db.rollback(save_point="release_holds")
+        frappe.log_error("Releasing held bills failed", reference_doctype=doc.doctype, reference_name=doc.name)
+
+
 def release_paid_holds(*args, **kwargs):
     """Release held bills whose client invoice is fully paid. Runs after payments and hourly, so payments
     applied through Payment Reconciliation are caught too."""

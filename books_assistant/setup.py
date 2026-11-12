@@ -99,14 +99,22 @@ def create_fields():
 
 def initialise_settings():
     """Give Automation Settings its defaults the first time, reading the switches that live in site config
-    (erp_rules checks, books_health recipients) so existing choices are kept."""
+    (erp_rules checks, books_health recipients) so existing choices are kept.
+
+    `bench install-app` can run this before the app's doctypes are synced (when the bench's cached module map
+    predates the app), so it waits for the migrate that follows instead of failing the install."""
+    if not frappe.db.exists("DocType", "Automation Settings"):
+        return
     if frappe.db.exists("Singles", {"doctype": "Automation Settings"}):
         return
     from books_assistant.books_assistant.doctype.automation_settings.automation_settings import load_site_config
 
     settings = frappe.get_single("Automation Settings")
     for df in settings.meta.fields:
-        if df.default is not None and df.fieldtype not in ("Section Break", "Column Break", "HTML"):
-            settings.set(df.fieldname, df.default)
+        if df.default is None or df.fieldtype in ("Section Break", "Column Break", "HTML"):
+            continue
+        missing = df.fieldtype == "Link" and not frappe.db.exists(df.options, df.default)
+        # e.g. a print format this site doesn't have: leave it empty, so ERPNext's own default is used
+        settings.set(df.fieldname, None if missing else df.default)
     load_site_config(settings)
     settings.save(ignore_permissions=True)

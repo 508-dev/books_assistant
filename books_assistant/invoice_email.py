@@ -83,10 +83,12 @@ def _render(template, default, doc):
 def on_submit(doc, method):
     """Email the invoice when a Billing Approver submits it. A failure never stops the invoice being submitted:
     it's noted on the invoice, which then shows under "never emailed" in Automation Settings."""
-    if doc.is_return or not settings().send_invoice_emails or BILLING_APPROVER not in frappe.get_roles():
+    if doc.is_return or BILLING_APPROVER not in frappe.get_roles():
         return
     frappe.db.savepoint("invoice_email")
     try:
+        if not settings().send_invoice_emails:
+            return
         send(doc)
     except Exception as e:
         frappe.db.rollback(save_point="invoice_email")
