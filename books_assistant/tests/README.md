@@ -34,20 +34,32 @@ Bench versions that print test failures but return exit status zero. It bypasses
 ERPNext's generic test fixtures/before-tests hook, which creates extra test
 companies incompatible with the API's deliberate single-company scope.
 
-The 22 real-site tests cover:
+The real-site suites cover:
 
 - Canonical stored-run reloads, denied forged state and explicit selections.
 - Two concurrent connections under REPEATABLE READ, duplicate execution,
   request-ID reuse, rollback and internal-record permissions.
 - Actual bank receipts, matching an existing payment, stale suggestions and
-  retries without duplicate payments.
+  retries without duplicate payments. Independent connections submit existing
+  draft payments/journals after an old consistent-read snapshot; approval must
+  reject the old suggestion and match the submitted voucher without duplication.
+- Actual User Permissions hiding a named invoice, matching rule account or
+  another company bank. Hidden matches stay blocked without exposing their IDs
+  or preventing unrelated safe lines from being reviewed.
 - Supplier pure previews, exact unsaved payments, newly held bills and a real
   $30 credit reconciled against a $100 bill, leaving $70 payable. Rolling back to
   an outer savepoint verifies that reconciliation and the request ledger share
-  the caller's transaction.
-- Actual billing submission, bill holds, stale invoices and ledger-stable retries.
+  the caller's transaction. A fully credited bill needs no bank account, and an
+  inaccessible client link on a held bill does not block eligible bills.
+- Actual billing submission, bill holds, stale invoices and ledger-stable retries;
+  only the recipient Contact actually used is required; unrelated timesheets
+  are excluded and referral credit notes retain their negative costs.
 - Books Health findings, pagination, source permissions, foreign-currency
-  rejection and reads that do not mutate SQL records or email queues.
+  rejection and reads that do not mutate SQL records or email queues. Custom
+  permission hooks and hidden source fields fail closed before global scans.
+- Read summaries preserve available sections when another source is denied,
+  redact hidden client links, and use explicit UTC timestamps. Repeated settings
+  initialization preserves saved disabled switches and email preferences.
 
 For individual suites, `bench run-tests --skip-before-tests --skip-test-records
 --module <module>` is also available. Check the printed result or use the strict

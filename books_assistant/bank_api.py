@@ -28,14 +28,16 @@ def _check_line(name, scope, permission="read"):
     return doc
 
 
-def _queue(scope, bank_account=None):
+def _queue(scope, bank_account=None, locking=False):
     from books_assistant import bank_review as br
 
     if bank_account:
         check_document("Bank Account", bank_account, company=scope["company"])
-    context = br.Context(scope["company"])
+    context = br.Context(scope["company"], locking=locking)
     rows = []
     for bt in br.unreconciled_lines(bank_account):
+        if bt.bank_account not in context.bank_gl:
+            continue
         current = _check_line(bt.name, scope)
         if current.docstatus != 1 or flt(current.unallocated_amount) <= 0.009:
             continue
@@ -130,11 +132,13 @@ def _authorize(payload, scope):
 def _bank_snapshot(payload, scope):
     from books_assistant.bank_review import NONE
 
+    lock_documents([("Company", scope["company"])])
+    lock_documents([("Bank Transaction", name) for name in payload["bank_transactions"]])
     _authorize(payload, scope)
     names = set(payload["bank_transactions"])
     rows = [
         row
-        for row in _queue(scope, payload.get("bank_account"))
+        for row in _queue(scope, payload.get("bank_account"), locking=True)
         if row["bank_transaction"] in names
     ]
     if names != {row["bank_transaction"] for row in rows}:
@@ -144,7 +148,7 @@ def _bank_snapshot(payload, scope):
     lock_documents([doc for row in rows for doc in _dependencies(row)])
     rows = [
         row
-        for row in _queue(scope, payload.get("bank_account"))
+        for row in _queue(scope, payload.get("bank_account"), locking=True)
         if row["bank_transaction"] in names
     ]
     if names != {row["bank_transaction"] for row in rows}:
@@ -211,7 +215,7 @@ def _approve(payload, scope):
     names = set(payload["bank_transactions"])
     rows = [
         row
-        for row in _queue(scope, payload.get("bank_account"))
+        for row in _queue(scope, payload.get("bank_account"), locking=True)
         if row["bank_transaction"] in names
     ]
     results = []
@@ -237,6 +241,8 @@ def _approve(payload, scope):
                 {"name": name, "ok": True, "status": "approved", "message": message}
             )
         except Exception as e:
+            if isinstance(e, (frappe.QueryDeadlockError, frappe.QueryTimeoutError)):
+                raise
             frappe.db.rollback(save_point="bank_approval_item")
             frappe.clear_last_message()
             results.append(

@@ -59,16 +59,17 @@ def _preview(supplier, names, scope, bank_account=None):
     if names is not None and set(names) != {b.name for b in bills}:
         frappe.throw(_("Some selected bills are missing, inaccessible, settled, held, or belong to another supplier."))
     credits = credit_entries(supplier, scope)
-    bank = bank_account or usual_bank_account(supplier, scope)
-    bank_details = _check_bank(bank, scope)
     bills_total = flt(sum(b.outstanding_amount for b in bills), 2)
     credit_total = flt(sum(c.amount for c in credits), 2)
+    to_pay = flt(max(bills_total - credit_total, 0), 2)
+    bank = (bank_account or usual_bank_account(supplier, scope)) if to_pay > 0 else None
+    bank_details = _check_bank(bank, scope) if to_pay > 0 else None
     return {
         "company": scope["company"], "currency": scope["currency"],
         "supplier": supplier, "bills": bills, "credits": credits,
         "bills_total": bills_total, "credit_total": credit_total,
         "credit_to_apply": min(bills_total, credit_total),
-        "to_pay": flt(max(bills_total - credit_total, 0), 2),
+        "to_pay": to_pay,
         "bank_account": bank, "bank_details": bank_details, "posting_date": today(),
         "supplier_modified": str(check_document("Supplier", supplier).modified),
         "held": held_bills(supplier, scope),
@@ -86,7 +87,8 @@ def preview(supplier, invoices=None, company=None, all_eligible=False, bank_acco
 
 def _authorize_preparation(payload, scope):
     _authorize(payload["supplier"], scope)
-    _check_bank(payload["bank_account"], scope)
+    if payload["bank_account"]:
+        _check_bank(payload["bank_account"], scope)
     for name in payload["invoices"]:
         check_document("Purchase Invoice", name, permission="write",
                        company=scope["company"], currency=scope["currency"])
@@ -97,8 +99,10 @@ def _authorize_preparation(payload, scope):
 def _preparation_snapshot(payload, scope):
     _authorize_preparation(payload, scope)
     view = _preview(payload["supplier"], payload["invoices"], scope, payload["bank_account"])
-    documents = [("Supplier", payload["supplier"]), ("Account", payload["bank_account"])]
-    documents.append(("Bank Account", view["bank_details"]["bank_account"]))
+    documents = [("Supplier", payload["supplier"])]
+    if payload["bank_account"]:
+        documents.append(("Account", payload["bank_account"]))
+        documents.append(("Bank Account", view["bank_details"]["bank_account"]))
     documents += [("Purchase Invoice", b.name) for b in view["bills"]]
     documents += [(c.reference_type, c.reference_name) for c in view["credits"]]
     lock_documents(documents)
@@ -225,7 +229,17 @@ def held_bills(supplier, scope=None):
     for row in rows:
         check_document("Purchase Invoice", row.name, company=scope["company"], currency=scope["currency"])
         if row.client_invoice:
-            check_document("Sales Invoice", row.client_invoice, company=scope["company"], currency=scope["currency"])
+            try:
+                client = check_document("Sales Invoice", row.client_invoice)
+                available = (client.docstatus == 1 and client.company == scope["company"]
+                             and client.currency == scope["currency"])
+            except (frappe.PermissionError, frappe.DoesNotExistError):
+                frappe.clear_last_message()
+                available = False
+            if not available:
+                row.client_invoice = None
+                row.hold_comment = _("The linked client invoice needs review by an accounting manager.")
+                row.reason_code = "blocking_invoice_unavailable"
     return rows
 
 

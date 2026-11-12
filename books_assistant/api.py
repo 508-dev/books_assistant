@@ -1,10 +1,13 @@
 """Read-only finance views for ERP clients, scoped to the authenticated user's records."""
 
 from collections import defaultdict
+from datetime import datetime, timezone
+from functools import partial
 
 import frappe
 from frappe import _
-from frappe.utils import add_days, flt, now_datetime, today
+from frappe.model import default_fields
+from frappe.utils import add_days, flt, today
 
 from books_assistant.integration import resolve_scope
 
@@ -22,11 +25,24 @@ def _company(company):
     return doc
 
 
-def _rows(doctype, filters, fields):
+def _rows(doctype, filters, fields, unavailable=None):
     # get_list applies document permissions and User Permissions, unlike get_all / raw SQL.
-    return frappe.get_list(
+    permitted = set(default_fields) | set(
+        frappe.get_meta(doctype).get_permitted_fieldnames(
+            user=frappe.session.user, permission_type="read", with_virtual_fields=False
+        )
+    )
+    if not frappe.has_permission(doctype, "read") or not set(fields).issubset(
+        permitted
+    ):
+        if unavailable is not None:
+            unavailable.add(doctype)
+        return []
+    rows = frappe.get_list(
         doctype, filters=filters, fields=fields, limit_page_length=0, order_by="name"
     )
+    # Custom has_permission hooks are evaluated on documents, not by get_list.
+    return [row for row in rows if frappe.has_permission(doctype, "read", doc=row.name)]
 
 
 def _totals(rows):
@@ -43,11 +59,13 @@ def _totals(rows):
 def get_finance_status(company):
     """Return visible work awaiting attention; amounts are never added across currencies."""
     _company(company)
-    accounts = _rows(
+    unavailable = set()
+    visible_rows = partial(_rows, unavailable=unavailable)
+    accounts = visible_rows(
         "Bank Account", {"company": company, "is_company_account": 1}, ["name"]
     )
     bank_lines = (
-        _rows(
+        visible_rows(
             "Bank Transaction",
             {
                 "bank_account": ["in", [a.name for a in accounts]],
@@ -59,7 +77,7 @@ def get_finance_status(company):
         if accounts
         else []
     )
-    overdue = _rows(
+    overdue = visible_rows(
         "Sales Invoice",
         {
             "company": company,
@@ -70,7 +88,7 @@ def get_finance_status(company):
         },
         ["name", "customer", "due_date", "currency", "outstanding_amount"],
     )
-    held = _rows(
+    held = visible_rows(
         "Purchase Invoice",
         {
             "company": company,
@@ -84,7 +102,7 @@ def get_finance_status(company):
     visible_client_names = (
         {
             r.name
-            for r in _rows(
+            for r in visible_rows(
                 "Sales Invoice",
                 {"company": company, "name": ["in", sorted(client_names)]},
                 ["name"],
@@ -96,12 +114,12 @@ def get_finance_status(company):
     for bill in held:
         if bill.client_invoice not in visible_client_names:
             bill.client_invoice = None
-    pending = _rows(
+    pending = visible_rows(
         "Billing Run",
         {"company": company, "status": "Prepared"},
         ["name", "period_start", "period_end", "status"],
     )
-    recent_invoices = _rows(
+    recent_invoices = visible_rows(
         "Sales Invoice",
         {
             "company": company,
@@ -111,7 +129,7 @@ def get_finance_status(company):
         ["name"],
     )
     failures = (
-        _rows(
+        visible_rows(
             "Communication",
             {
                 "reference_doctype": "Sales Invoice",
@@ -133,7 +151,8 @@ def get_finance_status(company):
         "contract_version": VERSION,
         "company": company,
         "as_of": today(),
-        "generated_at": now_datetime().isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "unavailable_sources": sorted(unavailable),
         "scope": "records_visible_to_current_user",
         "unmatched_bank_lines": bank_lines,
         "pending_billing_runs": pending,
@@ -149,8 +168,10 @@ def get_finance_status(company):
 def get_supplier_payment_status(supplier, company):
     """Explain holds without applying credits, creating payments, or releasing bills."""
     _company(company)
+    unavailable = set()
+    visible_rows = partial(_rows, unavailable=unavailable)
     frappe.get_doc("Supplier", supplier).check_permission("read")
-    bills = _rows(
+    bills = visible_rows(
         "Purchase Invoice",
         {
             "company": company,
@@ -170,7 +191,7 @@ def get_supplier_payment_status(supplier, company):
         ],
     )
     visible_clients = (
-        _rows(
+        visible_rows(
             "Sales Invoice",
             {
                 "company": company,
@@ -188,9 +209,11 @@ def get_supplier_payment_status(supplier, company):
     result = []
     for bill in bills:
         row = dict(bill)
+        client = clients.get(bill.client_invoice)
+        if not client:
+            row["client_invoice"] = None
         row["status"] = "held" if bill.on_hold else "eligible_for_payment"
         if bill.on_hold:
-            client = clients.get(bill.client_invoice)
             row["reason_code"] = (
                 "waiting_for_client_payment"
                 if client
@@ -199,9 +222,6 @@ def get_supplier_payment_status(supplier, company):
                 else "hold_requires_review"
             )
             row["blocking_invoice"] = dict(client) if client else None
-            # Avoid disclosing an inaccessible linked record through this explanation API.
-            if not client:
-                row["client_invoice"] = None
         else:
             row["reason_code"] = "not_on_hold"
             row["blocking_invoice"] = None
@@ -211,7 +231,8 @@ def get_supplier_payment_status(supplier, company):
         "contract_version": VERSION,
         "company": company,
         "supplier": supplier,
-        "generated_at": now_datetime().isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "unavailable_sources": sorted(unavailable),
         "as_of": today(),
         "scope": "records_visible_to_current_user",
         "bills": result,

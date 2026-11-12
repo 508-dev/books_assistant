@@ -34,6 +34,8 @@ class TestIntegration(unittest.TestCase):
         frappe.local = SimpleNamespace(response={})
         frappe.ValidationError = ValueError
         frappe.PermissionError = PermissionError
+        frappe.QueryDeadlockError = type("QueryDeadlockError", (RuntimeError,), {})
+        frappe.QueryTimeoutError = type("QueryTimeoutError", (RuntimeError,), {})
         frappe.parse_json = json.loads
         frappe.throw = lambda message, exception=ValueError: (_ for _ in ()).throw(
             exception(message)
@@ -92,7 +94,9 @@ class TestIntegration(unittest.TestCase):
                 key: dict(value) for key, value in copy.deepcopy(self.records).items()
             }
 
-        def rollback(save_point):
+        def rollback(save_point=None):
+            self.trace.append(("rollback", save_point))
+            save_point = save_point or "api_execution"
             self.records = {
                 key: Doc(value) for key, value in snapshots[save_point].items()
             }
@@ -301,6 +305,22 @@ class TestIntegration(unittest.TestCase):
 
         self.frappe.flags = Flags()
         self.subject.check_document("Company", "Co-op")
+
+    def test_database_conflicts_fully_rollback_and_preserve_original_error(self):
+        for exception in (
+            self.frappe.QueryDeadlockError,
+            self.frappe.QueryTimeoutError,
+        ):
+            with self.subTest(exception=exception):
+                preview = self.preview()
+                self.perform.side_effect = exception("retry transaction")
+                with self.assertRaisesRegex(exception, "retry transaction"):
+                    self.consume(preview)
+                self.assertEqual(self.trace[-1], ("rollback", None))
+                self.assertFalse(any(key[0] == "API Request" for key in self.records))
+                self.assertFalse(
+                    self.records[("API Preview", preview)].get("consumed_request")
+                )
 
 
 if __name__ == "__main__":

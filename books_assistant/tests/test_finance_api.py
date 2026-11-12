@@ -4,7 +4,7 @@ import importlib.util
 from datetime import datetime
 from pathlib import Path
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -22,6 +22,33 @@ class TestFinanceAPI(unittest.TestCase):
         self.frappe.throw = Mock(side_effect=ValueError)
         self.frappe._ = lambda text: text
         self.frappe.get_doc = Mock()
+        self.frappe.session = SimpleNamespace(user="reader@example.test")
+        self.frappe.has_permission = Mock(return_value=True)
+        self.frappe.get_meta = Mock()
+        self.fields = {
+            "name",
+            "date",
+            "bank_account",
+            "currency",
+            "unallocated_amount",
+            "customer",
+            "due_date",
+            "outstanding_amount",
+            "supplier",
+            "client_invoice",
+            "period_start",
+            "period_end",
+            "status",
+            "reference_name",
+            "delivery_status",
+            "creation",
+            "posting_date",
+            "on_hold",
+            "docstatus",
+        }
+        self.frappe.get_meta.return_value.get_permitted_fieldnames.side_effect = (
+            lambda **kwargs: self.fields
+        )
         self.records = {}
         self.queries = []
 
@@ -41,6 +68,15 @@ class TestFinanceAPI(unittest.TestCase):
         integration.resolve_scope = Mock(
             return_value={"company": "Company A", "currency": "USD"}
         )
+        model = ModuleType("frappe.model")
+        model.default_fields = [
+            "name",
+            "creation",
+            "modified",
+            "modified_by",
+            "owner",
+            "docstatus",
+        ]
         spec = importlib.util.spec_from_file_location(
             "finance_api_test_subject", Path(__file__).parents[1] / "api.py"
         )
@@ -50,6 +86,7 @@ class TestFinanceAPI(unittest.TestCase):
             {
                 "frappe": self.frappe,
                 "frappe.utils": utils,
+                "frappe.model": model,
                 "books_assistant.integration": integration,
             },
         ):
@@ -163,6 +200,67 @@ class TestFinanceAPI(unittest.TestCase):
         ]
         result = self.api.get_supplier_payment_status("Supplier A", "Company A")
         self.assertEqual(result["bills"][0]["reason_code"], "hold_requires_review")
+
+    def test_unheld_bill_does_not_disclose_inaccessible_client_invoice(self):
+        self.records["Purchase Invoice"] = [
+            Row(
+                name="BILL-1",
+                currency="USD",
+                outstanding_amount=50,
+                on_hold=0,
+                client_invoice="SECRET",
+            )
+        ]
+        result = self.api.get_supplier_payment_status("Supplier A", "Company A")
+        self.assertIsNone(result["bills"][0]["client_invoice"])
+        self.assertIsNone(result["bills"][0]["blocking_invoice"])
+        self.assertEqual(result["bills"][0]["reason_code"], "not_on_hold")
+
+    def test_unreadable_bank_source_does_not_hide_other_sections(self):
+        self.records["Billing Run"] = [Row(name="RUN-1", status="Prepared")]
+        self.frappe.has_permission.side_effect = lambda doctype, *args, **kwargs: (
+            doctype != "Bank Account"
+        )
+        result = self.api.get_finance_status("Company A")
+        self.assertEqual(result["pending_billing_runs"][0]["name"], "RUN-1")
+        self.assertEqual(result["unavailable_sources"], ["Bank Account"])
+        self.assertFalse(
+            any(
+                doctype in ("Bank Account", "Bank Transaction")
+                for doctype, _ in self.queries
+            )
+        )
+
+    def test_custom_record_permission_hook_excludes_hidden_client(self):
+        self.records["Purchase Invoice"] = [
+            Row(
+                name="BILL-1",
+                currency="USD",
+                outstanding_amount=50,
+                on_hold=0,
+                client_invoice="SECRET",
+            )
+        ]
+        self.records["Sales Invoice"] = [
+            Row(name="SECRET", currency="USD", docstatus=1, outstanding_amount=50)
+        ]
+        self.frappe.has_permission.side_effect = lambda doctype, *args, **kwargs: (
+            kwargs.get("doc") != "SECRET"
+        )
+        result = self.api.get_supplier_payment_status("Supplier A", "Company A")
+        self.assertIsNone(result["bills"][0]["client_invoice"])
+
+    def test_hidden_amount_field_withholds_invoice_section(self):
+        self.fields.remove("outstanding_amount")
+        result = self.api.get_finance_status("Company A")
+        self.assertEqual(result["overdue_invoices"], [])
+        self.assertIn("Sales Invoice", result["unavailable_sources"])
+        self.assertFalse(
+            any(
+                doctype == "Sales Invoice" and "outstanding_amount" in kwargs["fields"]
+                for doctype, kwargs in self.queries
+            )
+        )
 
 
 if __name__ == "__main__":

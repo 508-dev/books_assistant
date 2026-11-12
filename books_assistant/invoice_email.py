@@ -53,17 +53,30 @@ def split_emails(text):
 
 def recipients(doc):
     """(to, cc) for a Sales Invoice."""
+    details = recipient_details(doc)
+    return details["to"], details["cc"]
+
+
+def recipient_details(doc):
+    """Resolve the existing recipient order and identify only the Contact actually used."""
     customer = (check_document("Customer", doc.customer) if frappe.flags.get("books_assistant_billing_locked") else
                 frappe.db.get_value("Customer", doc.customer, ["invoice_to", "invoice_cc", "email_id"], as_dict=True) or {})
-    to = split_emails(customer.get("invoice_to")) or split_emails(doc.contact_email) or _contact_emails(doc.customer)
+    to = split_emails(customer.get("invoice_to")) or split_emails(doc.contact_email)
+    contact = None
+    if not to:
+        contact, to = _contact_details(doc.customer)
     if not to:
         to = split_emails(customer.get("email_id"))
     cc = split_emails(customer.get("invoice_cc")) + split_emails(settings().always_cc)
     to_lower = {t.lower() for t in to}
-    return to, [c for c in dict.fromkeys(cc) if c.lower() not in to_lower]
+    return {"to": to, "cc": [c for c in dict.fromkeys(cc) if c.lower() not in to_lower], "contact": contact}
 
 
 def _contact_emails(customer):
+    return _contact_details(customer)[1]
+
+
+def _contact_details(customer):
     rows = frappe.db.sql(
         """
         select c.name, c.email_id from `tabContact` c
@@ -74,10 +87,11 @@ def _contact_emails(customer):
         """ + (" for update" if frappe.flags.get("books_assistant_billing_locked") else ""),
         customer,
     )
-    if rows and frappe.flags.get("books_assistant_billing_locked"):
+    emails = split_emails(rows[0][1]) if rows else []
+    if emails and frappe.flags.get("books_assistant_billing_locked"):
         lock_documents([("Contact", rows[0][0])])
         check_document("Contact", rows[0][0])
-    return split_emails(rows[0][1]) if rows else []
+    return (rows[0][0], emails) if emails else (None, [])
 
 
 def print_format(doc):
@@ -110,6 +124,8 @@ def on_submit(doc, method):
         communication = send(doc)
         doc.flags.books_assistant_email_result = ({"state": "queued", "communication_id": communication}
                                                  if communication else {"state": "missing_recipient"})
+    except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+        raise
     except Exception as e:
         frappe.db.rollback(save_point="invoice_email")
         frappe.clear_last_message()

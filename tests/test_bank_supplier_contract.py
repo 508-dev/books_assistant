@@ -49,6 +49,9 @@ class BankSupplierContractTests(unittest.TestCase):
         frappe.session = Row(user="approver@example.test")
         frappe.ValidationError = ValueError
         frappe.PermissionError = PermissionError
+        frappe.DoesNotExistError = LookupError
+        frappe.QueryDeadlockError = type("QueryDeadlockError", (Exception,), {})
+        frappe.QueryTimeoutError = type("QueryTimeoutError", (Exception,), {})
         frappe.throw = Mock(
             side_effect=lambda message, *args: (_ for _ in ()).throw(
                 ValueError(message)
@@ -351,8 +354,148 @@ class BankSupplierContractTests(unittest.TestCase):
             patch.object(self.br, "unreconciled_lines", return_value=[stale]),
             patch.object(self.bank, "_check_line", return_value=current),
         ):
+            context.return_value.bank_gl = {"BANK": "BANK-GL"}
             self.assertEqual(self.bank._queue(SCOPE), [])
             context.return_value.suggest.assert_not_called()
+
+    def test_hidden_named_invoice_blocks_only_its_line_without_fallthrough(self):
+        context = self.br.Context.__new__(self.br.Context)
+        context.bank_gl = {"BANK": "BANK-GL"}
+        hidden = Row(name="BT-1", bank_account="BANK", deposit=100, withdrawal=0,
+                     date="2026-11-13", unallocated_amount=100, description="ACC-SINV-2026-12345")
+        self.frappe.db.get_value = Mock(return_value=Row(name="ACC-SINV-2026-12345", docstatus=1))
+        self.frappe.has_permission.return_value = False
+        with patch.object(context, "_match_existing", return_value=None), \
+                patch.object(context, "_booked_elsewhere", return_value=None), \
+                patch.object(context, "_transfer") as transfer, \
+                patch.object(context, "_rule") as rule, \
+                patch.object(context, "_by_party") as party:
+            blocked = context.suggest(hidden)
+        self.assertEqual(blocked["kind"], self.br.NONE)
+        self.assertNotIn("12345", blocked["summary"])
+        self.assertNotIn("invoices", blocked)
+        transfer.assert_not_called()
+        rule.assert_not_called()
+        party.assert_not_called()
+        with patch.object(context, "_match_existing", return_value={"kind": "match", "confidence": "high"}):
+            self.assertEqual(context.suggest(hidden)["kind"], "match")
+
+    def test_hidden_rule_account_blocks_only_matching_line_without_fallthrough(self):
+        context = self.br.Context.__new__(self.br.Context)
+        context.scope, context.bank_gl = SCOPE, {"BANK": "BANK-GL"}
+        context.rules = [types.SimpleNamespace(name="HIDDEN-RULE", account="SECRET-ACCOUNT", times_used=3,
+                                               matches=lambda bt, bank: bt.description == "MATCH-RULE",
+                                               specificity=lambda bt: 10)]
+        line = Row(name="BT-1", bank_account="BANK", deposit=0, withdrawal=100,
+                   date="2026-11-13", unallocated_amount=100, description="MATCH-RULE")
+        def permitted(doctype, name, **kwargs):
+            if doctype == "Account":
+                raise PermissionError
+            return Row()
+        with patch.object(context, "_match_existing", return_value=None), \
+                patch.object(context, "_booked_elsewhere", return_value=None), \
+                patch.object(context, "_by_invoice_number", return_value=None), \
+                patch.object(context, "_transfer", return_value=None), \
+                patch.object(self.br, "check_document", side_effect=permitted), \
+                patch.object(context, "_by_party", return_value={"kind": "payout", "confidence": "check"}) as party:
+            blocked = context.suggest(line)
+            self.assertEqual(blocked["kind"], self.br.NONE)
+            party.assert_not_called()
+            line.description = "UNRELATED"
+            self.assertEqual(context.suggest(line)["kind"], "payout")
+        self.assertNotIn("SECRET", blocked["summary"])
+        self.assertNotIn("rule", blocked)
+
+    def test_hidden_company_bank_still_blocks_duplicate_payment(self):
+        context = self.br.Context.__new__(self.br.Context)
+        context.scope, context.locking = SCOPE, True
+        context.bank_gl = {"BANK-A": "BANK-A-GL"}
+        context.company_bank_gl = {"BANK-A": "BANK-A-GL", "HIDDEN-BANK": "SECRET-GL"}
+        self.frappe.db.sql.return_value = [Row(name="SECRET-PE", account="SECRET-GL", party="SECRET-PARTY")]
+        line = Row(name="BT-1", bank_account="BANK-A", deposit=0, withdrawal=100,
+                   date="2026-11-13", unallocated_amount=100, description="SUPPLIER")
+        with patch.object(context, "_match_existing", return_value=None), \
+                patch.object(context, "_by_invoice_number") as invoice:
+            blocked = context.suggest(line)
+        self.assertEqual(blocked["kind"], self.br.NONE)
+        self.assertNotIn("SECRET", blocked["summary"])
+        self.assertIn("SECRET-GL", self.frappe.db.sql.call_args.args[1]["other_gls"])
+        self.assertIn("for update", self.frappe.db.sql.call_args.args[0])
+        invoice.assert_not_called()
+
+    def test_current_discovery_locks_payment_and_journal_queries(self):
+        context = self.br.Context.__new__(self.br.Context)
+        context.bank_gl, context.locking, context.claimed = {"BANK": "BANK-GL"}, True, set()
+        line = Row(bank_account="BANK", deposit=100, date="2026-11-13")
+        self.assertIsNone(context._match_existing(line, 100))
+        queries = [call.args[0] for call in self.frappe.db.sql.call_args_list]
+        self.assertEqual(len(queries), 2)
+        for query in queries:
+            self.assertTrue(query.strip().endswith("for update"))
+
+    def test_ordinary_voucher_hook_locks_company_without_restricting_erp_scope(self):
+        with patch.object(self.br, "lock_documents") as lock, patch.object(self.br, "resolve_scope") as scope:
+            self.br.serialize_voucher_write(Row(company="Other non-USD company"))
+        lock.assert_called_once_with([("Company", "Other non-USD company")])
+        scope.assert_not_called()
+        self.frappe.only_for.assert_not_called()
+        self.frappe.db.commit.assert_not_called()
+
+    def test_deadlock_aborts_bank_batch_without_rolling_back_a_missing_savepoint(self):
+        with patch.object(self.bank, "_queue", return_value=[{"bank_transaction": "BT-1"}]), \
+                patch.object(self.br, "bank_line", return_value=Row(unallocated_amount=100)), \
+                patch.object(self.br, "execute", side_effect=self.frappe.QueryDeadlockError("retry")):
+            with self.assertRaises(self.frappe.QueryDeadlockError):
+                self.bank._approve({"bank_transactions": ["BT-1"]}, SCOPE)
+        self.frappe.db.rollback.assert_not_called()
+
+    def test_unavailable_held_invoice_is_redacted_without_blocking_eligible_bills(self):
+        for state in (PermissionError, LookupError, "cancelled"):
+            held = Row(name="HELD-PI", client_invoice="SECRET-SI", hold_comment="Waiting for SECRET-SI")
+            self.frappe.get_list.return_value = [held]
+            def permitted(doctype, name, **kwargs):
+                if doctype == "Sales Invoice":
+                    if state == "cancelled":
+                        return Row(docstatus=2, company=SCOPE["company"], currency="USD")
+                    raise state
+                return Row(modified="v1")
+            with self.subTest(state=state), \
+                    patch.object(self.pay, "resolve_scope", return_value=SCOPE), \
+                    patch.object(self.pay, "_authorize"), \
+                    patch.object(self.pay, "check_document", side_effect=permitted), \
+                    patch.object(self.pay, "open_bills", return_value=[Row(name="ELIGIBLE", outstanding_amount=60)]), \
+                    patch.object(self.pay, "credit_entries", return_value=[]), \
+                    patch.object(self.pay, "_check_bank"), \
+                    patch.object(self.pay, "fronting_warnings", return_value=[]):
+                viewed = self.pay.preview("Supplier", ["ELIGIBLE"], bank_account="BANK")
+            self.assertEqual(viewed["to_pay"], 60)
+            self.assertIsNone(viewed["held"][0].client_invoice)
+            self.assertNotIn("SECRET", viewed["held"][0].hold_comment)
+            self.assertEqual(viewed["held"][0].reason_code, "blocking_invoice_unavailable")
+
+    def test_credit_only_preview_and_preparation_do_not_need_bank_account(self):
+        with patch.object(self.pay, "resolve_scope", return_value=SCOPE), \
+                patch.object(self.pay, "_authorize"), \
+                patch.object(self.pay, "check_document", return_value=Row(modified="v1")), \
+                patch.object(self.pay, "open_bills", return_value=[Row(name="PI-1", outstanding_amount=100)]), \
+                patch.object(self.pay, "credit_entries", return_value=[Row(amount=100)]), \
+                patch.object(self.pay, "held_bills", return_value=[]), \
+                patch.object(self.pay, "fronting_warnings", return_value=[]), \
+                patch.object(self.pay, "usual_bank_account") as choose, \
+                patch.object(self.pay, "_check_bank") as check:
+            viewed = self.pay.preview("Supplier", ["PI-1"])
+        self.assertEqual(viewed["to_pay"], 0)
+        self.assertIsNone(viewed["bank_account"])
+        self.assertIsNone(viewed["bank_details"])
+        choose.assert_not_called()
+        check.assert_not_called()
+        with patch.object(self.pay, "apply_credit", return_value=100), \
+                patch.object(self.pay, "open_bills", return_value=[]), \
+                patch.object(self.pay, "new_payment") as payment:
+            result = self.pay._prepare({"supplier": "Supplier", "invoices": ["PI-1"], "bank_account": None}, SCOPE)
+        self.assertEqual(result["credit_applied"], 100)
+        self.assertIsNone(result["payment_entry"])
+        payment.assert_not_called()
 
 
 if __name__ == "__main__":

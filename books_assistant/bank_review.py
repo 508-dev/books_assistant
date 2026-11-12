@@ -29,6 +29,26 @@ NOT_A_PARTY_NAME = {"INTUIT", "INTUIT INC.", "WISE", "WISE INC", "STRIPE", "PAYP
                     "508.DEV LLC", "508.DEV", "INTEREST"}
 
 
+class UnavailableBankMatch(Exception):
+    """A matching source exists but cannot safely be exposed or acted upon."""
+
+
+def unavailable_suggestion():
+    return {"kind": NONE, "confidence": NONE,
+            "summary": _("A possible match is unavailable. Ask an accounting manager to review this line.")}
+
+
+def serialize_voucher_write(doc, method=None):
+    """Serialize ordinary ERP voucher writes with Bank Review's company lock.
+
+    Frappe can already hold an existing voucher lock before this hook runs.
+    A database deadlock must therefore abort/retry the whole request; this hook
+    never commits, rolls back, changes scope, or bypasses normal ERP permissions.
+    """
+    if doc.get("company"):
+        lock_documents([("Company", doc.company)])
+
+
 @frappe.whitelist(methods=["GET"])
 def get_queue(bank_account=None, company=None):
     from books_assistant.bank_api import get_queue as read_queue
@@ -77,23 +97,42 @@ def bank_line(name):
 class Context:
     """What a queue run needs to know once: bank accounts, rules, parties, and entries already spoken for."""
 
-    def __init__(self, company=None):
+    def __init__(self, company=None, locking=False):
         self.scope = resolve_scope(company)
-        self.bank_gl = dict(
-            frappe.get_list("Bank Account", filters={"is_company_account": 1, "company": self.scope["company"]},
-                            fields=["name", "account"], as_list=True, limit_page_length=0)
-        )
-        self.rules = [
-            frappe.get_doc("Bank Rule", name)
-            for name in frappe.get_list("Bank Rule", filters={"enabled": 1}, order_by="times_used desc",
-                                        pluck="name", limit_page_length=0)
-        ]
-        for rule in self.rules:
-            check_document("Account", rule.account, company=self.scope["company"], currency=self.scope["currency"])
+        self.locking = locking
+        # Duplicate detection must include accounts hidden by User Permissions.
+        # Their names are never returned unless the actor can read them.
+        banks = (frappe.db.sql(
+            "select name, account from `tabBank Account` where is_company_account = 1 "
+            "and company = %s order by name for update", self.scope["company"], as_dict=True,
+        ) if locking else frappe.get_all(
+            "Bank Account", filters={"is_company_account": 1, "company": self.scope["company"]},
+            fields=["name", "account"],
+        ))
+        self.company_bank_gl = {bank.name: bank.account for bank in banks if bank.account}
+        visible_banks = set(frappe.get_list(
+            "Bank Account", filters={"is_company_account": 1, "company": self.scope["company"]},
+            pluck="name", limit_page_length=0,
+        ))
+        self.bank_gl = {name: account for name, account in self.company_bank_gl.items()
+                        if name in visible_banks and frappe.has_permission("Account", "read", account)}
+        rules = (frappe.db.sql(
+            "select name from `tabBank Rule` where enabled = 1 order by times_used desc for update", pluck=True,
+        ) if locking else frappe.get_all("Bank Rule", filters={"enabled": 1},
+                                         order_by="times_used desc", pluck="name"))
+        self.rules = []
+        for name in rules:
+            try:
+                self.rules.append(frappe.get_doc("Bank Rule", name, for_update=locking))
+            except frappe.DoesNotExistError:
+                frappe.clear_last_message()
         self.parties = {"Customer": self._parties("Customer", "customer_name"),
                         "Supplier": self._parties("Supplier", "supplier_name")}
-        self.claimed = set()  # entries already suggested for another line in this run
-        self.pairs = {}  # bank line -> the other side of its transfer
+        self.claimed = set()
+        self.pairs = {}
+
+    def locking_clause(self):
+        return " for update" if getattr(self, "locking", False) else ""
 
     def _parties(self, doctype, title_field):
         parties = {}
@@ -113,14 +152,17 @@ class Context:
     def suggest(self, bt):
         amount = flt(bt.unallocated_amount)
         full = abs(amount - (flt(bt.deposit) or flt(bt.withdrawal))) < 0.005
-        suggestion = self._match_existing(bt, amount) or self._booked_elsewhere(bt, amount)
-        if not suggestion and full:
-            suggestion = (
-                self._by_invoice_number(bt, amount)
-                or self._transfer(bt, amount)
-                or self._rule(bt)
-                or self._by_party(bt, amount)
-            )
+        try:
+            suggestion = self._match_existing(bt, amount) or self._booked_elsewhere(bt, amount)
+            if not suggestion and full:
+                suggestion = (
+                    self._by_invoice_number(bt, amount)
+                    or self._transfer(bt, amount)
+                    or self._rule(bt)
+                    or self._by_party(bt, amount)
+                )
+        except UnavailableBankMatch:
+            suggestion = unavailable_suggestion()
         if not suggestion:
             suggestion = {"kind": NONE, "confidence": NONE, "summary": self._hint(bt, full)}
         return {
@@ -155,7 +197,7 @@ class Context:
               and {"pe.paid_to = %(gl)s and abs(pe.received_amount - %(amount)s) < 0.005" if money_in
                    else "pe.paid_from = %(gl)s and abs(pe.paid_amount - %(amount)s) < 0.005"}
               and {not_linked.format(name="pe.name")}
-            """,
+            """ + self.locking_clause(),
             {**params, "doctype": "Payment Entry"},
             as_dict=True,
         )
@@ -166,7 +208,7 @@ class Context:
             where je.docstatus = 1 and je.posting_date between %(lo)s and %(hi)s and a.account = %(gl)s
               and abs(a.{"debit_in_account_currency" if money_in else "credit_in_account_currency"} - %(amount)s) < 0.005
               and {not_linked.format(name="je.name")}
-            """,
+            """ + self.locking_clause(),
             {**params, "doctype": "Journal Entry"},
             as_dict=True,
         )
@@ -200,7 +242,7 @@ class Context:
         not matched to any bank line: probably this money, with the wrong bank account. Creating a new payment
         would record it twice, so the line is held for a person to correct."""
         gl = self.bank_gl.get(bt.bank_account)
-        other_gls = [a for a in self.bank_gl.values() if a and a != gl]
+        other_gls = sorted({a for a in getattr(self, "company_bank_gl", self.bank_gl).values() if a and a != gl})
         if not other_gls:
             return None
         money_in = flt(bt.deposit) > 0
@@ -208,19 +250,21 @@ class Context:
             f"""
             select pe.name, pe.party, {"pe.paid_to" if money_in else "pe.paid_from"} account
             from `tabPayment Entry` pe
-            where pe.docstatus = 1 and pe.posting_date between %(lo)s and %(hi)s
+            where pe.docstatus = 1 and pe.company = %(company)s and pe.posting_date between %(lo)s and %(hi)s
               and {"pe.paid_to" if money_in else "pe.paid_from"} in %(other_gls)s
               and abs({"pe.received_amount" if money_in else "pe.paid_amount"} - %(amount)s) < 0.005
               and not exists (select 1 from `tabBank Transaction Payments` btp
                               where btp.payment_document = 'Payment Entry' and btp.payment_entry = pe.name)
-            """,
+            """ + self.locking_clause(),
             {"lo": add_days(bt.date, -WINDOW_DAYS), "hi": add_days(bt.date, WINDOW_DAYS), "other_gls": other_gls,
-             "amount": amount},
+             "amount": amount, "company": self.scope["company"]},
             as_dict=True,
         )
         if not rows:
             return None
-        if any(not frappe.has_permission("Payment Entry", "read", row.name) for row in rows):
+        if any(row.account not in self.bank_gl.values()
+               or not frappe.has_permission("Payment Entry", "read", row.name)
+               or not frappe.has_permission("Account", "read", row.account) for row in rows):
             return {"kind": NONE, "confidence": NONE,
                     "summary": _("A possible matching entry is outside your access. Ask an accounting manager to review.")}
         pe = rows[0]
@@ -234,7 +278,7 @@ class Context:
     def _by_invoice_number(self, bt, amount):
         money_in = flt(bt.deposit) > 0
         doctype = "Sales Invoice" if money_in else "Purchase Invoice"
-        invoices = [i for i in (current_invoice(doctype, ref) for ref in invoice_refs(bt.description, doctype)) if i]
+        invoices = [i for i in (current_invoice(doctype, ref, locking=getattr(self, "locking", False)) for ref in invoice_refs(bt.description, doctype)) if i]
         invoices = [i for i in invoices if flt(i.outstanding_amount) > 0.009]
         if not invoices or len({i.party for i in invoices}) > 1:
             return None
@@ -246,7 +290,7 @@ class Context:
         party = bt.party if bt.party_type == party_type and bt.party else self.party_in(bt.description, party_type)
         if not party:
             return None
-        open_invoices = outstanding_invoices(doctype, party)
+        open_invoices = outstanding_invoices(doctype, party, locking=getattr(self, "locking", False))
         exact = [i for i in open_invoices if abs(flt(i.outstanding_amount) - amount) < 0.01]
         if len(exact) == 1:
             return self._apply_to(amount, exact, doctype, _("the only open one for that amount"), sure=False)
@@ -299,7 +343,7 @@ class Context:
                   and abs(bt.{"withdrawal" if money_in else "deposit"} - %(amount)s) < 0.005
                   and bt.date between %(lo)s and %(hi)s
                 order by abs(datediff(bt.date, %(date)s)), bt.name
-                """,
+                """ + self.locking_clause(),
                 {"bank_account": bt.bank_account, "amount": amount, "date": bt.date,
                  "lo": add_days(bt.date, -TRANSFER_DAYS), "hi": add_days(bt.date, TRANSFER_DAYS)},
                 pluck=True,
@@ -312,7 +356,13 @@ class Context:
                 return None
             pair_name = candidates[0]
             self.pairs[bt.name], self.pairs[pair_name] = pair_name, bt.name
-        pair = frappe.db.get_value("Bank Transaction", pair_name, ["name", "bank_account", "date"], as_dict=True)
+        if getattr(self, "locking", False):
+            lock_documents([("Bank Transaction", pair_name)])
+            pair = check_document("Bank Transaction", pair_name)
+        else:
+            pair = frappe.db.get_value("Bank Transaction", pair_name, ["name", "bank_account", "date"], as_dict=True)
+        if pair.bank_account not in self.bank_gl:
+            return unavailable_suggestion()
         source, target = (pair, bt) if money_in else (bt, pair)
         return {
             "kind": "transfer",
@@ -331,6 +381,12 @@ class Context:
         matched.sort(key=lambda r: (-r.specificity(bt), -(r.times_used or 0)))
         if matched:
             rule = matched[0]
+            try:
+                check_document("Bank Rule", rule.name)
+                check_document("Account", rule.account, company=self.scope["company"], currency=self.scope["currency"])
+            except (frappe.PermissionError, frappe.DoesNotExistError):
+                frappe.clear_last_message()
+                raise UnavailableBankMatch from None
             return {
                 "kind": "rule",
                 "confidence": HIGH if rule.times_used >= 2 else CHECK,
@@ -447,18 +503,31 @@ def journal_from_line(bank_transaction, account):
 # -------------------------------------------------------------------- invoices
 
 
-def current_invoice(doctype, name):
+def current_invoice(doctype, name, locking=False):
     """The live version of an invoice, following amendments if the named one was cancelled."""
     for _hop in range(5):
-        row = frappe.db.get_value(doctype, name, ["name", "docstatus", "outstanding_amount"] + party_fields(doctype),
-                                  as_dict=True)
+        if locking:
+            rows = frappe.db.sql(
+                f"select name, docstatus, outstanding_amount, {', '.join(party_fields(doctype))} "
+                f"from `tab{doctype}` where name = %s for update", name, as_dict=True,
+            )
+            row = rows[0] if rows else None
+        else:
+            row = frappe.db.get_value(doctype, name, ["name", "docstatus", "outstanding_amount"] + party_fields(doctype),
+                                      as_dict=True)
         if not row:
             return None
+        if not frappe.has_permission(doctype, "read", row.name):
+            raise UnavailableBankMatch
         if row.docstatus == 1:
-            if not frappe.has_permission(doctype, "read", row.name):
-                frappe.throw(_("A named invoice is outside your access."), frappe.PermissionError)
             scope = resolve_scope()
-            doc = check_document(doctype, row.name, company=scope["company"], currency=scope["currency"])
+            if locking:
+                lock_documents([(doctype, row.name)])
+            try:
+                doc = check_document(doctype, row.name, company=scope["company"], currency=scope["currency"])
+            except (frappe.PermissionError, frappe.DoesNotExistError):
+                frappe.clear_last_message()
+                raise UnavailableBankMatch from None
             if doc.docstatus != 1:
                 return None
             row.outstanding_amount = doc.outstanding_amount
@@ -466,7 +535,14 @@ def current_invoice(doctype, name):
             if doctype == "Purchase Invoice":
                 row.on_hold, row.client_invoice = doc.on_hold, doc.client_invoice
             return row
-        name = frappe.db.get_value(doctype, {"amended_from": name, "docstatus": ["!=", 2]}, "name")
+        if locking:
+            amended = frappe.db.sql(
+                f"select name from `tab{doctype}` where amended_from = %s and docstatus != 2 for update",
+                name, pluck=True,
+            )
+            name = amended[0] if amended else None
+        else:
+            name = frappe.db.get_value(doctype, {"amended_from": name, "docstatus": ["!=", 2]}, "name")
         if not name:
             return None
     return None
@@ -477,18 +553,29 @@ def party_fields(doctype):
     return ["customer as party"] if doctype == "Sales Invoice" else ["supplier as party", "on_hold", "client_invoice"]
 
 
-def outstanding_invoices(doctype, party):
+def outstanding_invoices(doctype, party, locking=False):
     party_field = "customer" if doctype == "Sales Invoice" else "supplier"
     scope = resolve_scope()
-    rows = frappe.get_list(
-        doctype,
-        filters={party_field: party, "company": scope["company"], "docstatus": 1,
-                 "outstanding_amount": [">", 0.009], "is_return": 0},
-        fields=["name", "outstanding_amount", "posting_date"] + party_fields(doctype),
-        order_by="posting_date, name", limit_page_length=0,
-    )
+    if locking:
+        rows = frappe.db.sql(
+            f"select name, outstanding_amount, posting_date, {', '.join(party_fields(doctype))} "
+            f"from `tab{doctype}` where {party_field} = %s and company = %s and docstatus = 1 "
+            "and outstanding_amount > 0.009 and is_return = 0 order by posting_date, name for update",
+            (party, scope["company"]), as_dict=True,
+        )
+        rows = [row for row in rows if frappe.has_permission(doctype, "read", row.name)]
+    else:
+        rows = frappe.get_list(
+            doctype,
+            filters={party_field: party, "company": scope["company"], "docstatus": 1,
+                     "outstanding_amount": [">", 0.009], "is_return": 0},
+            fields=["name", "outstanding_amount", "posting_date"] + party_fields(doctype),
+            order_by="posting_date, name", limit_page_length=0,
+        )
     current = []
     for row in rows:
+        if locking:
+            lock_documents([(doctype, row.name)])
         doc = check_document(doctype, row.name, company=scope["company"], currency=scope["currency"])
         if doc.docstatus != 1 or doc.is_return or flt(doc.outstanding_amount) <= 0.009:
             continue

@@ -328,6 +328,36 @@ class TestSyntheticFinanceTrajectories(unittest.TestCase):
         self.assertFalse(credit.references)
         self.assert_unused(frozen["preview_id"])
 
+    def test_supplier_credit_only_preparation_needs_no_bank_account(self):
+        from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
+
+        bill = self.invoice("Purchase Invoice", 100, submitted=True)
+        credit = get_payment_entry("Purchase Invoice", bill.name, bank_account=self.fixture["bank_gl"])
+        credit.set("references", [])
+        credit.update({"paid_amount": 100, "received_amount": 100, "posting_date": today(),
+                       "reference_date": today(), "reference_no": self.marker})
+        credit.insert()
+        credit.submit()
+        credit.db_set("bank_account", None)
+        # Only synthetic setup rows are removed, inside this test's rollback.
+        frappe.db.delete("Bank Account", {"company": self.company})
+        self.assertEqual(frappe.db.count("Bank Account", {"company": self.company}), 0)
+        count = frappe.db.count("Payment Entry")
+        viewed = pay_supplier.preview(self.fixture["supplier"], [bill.name], company=self.company)
+        self.assertEqual((flt(viewed["credit_to_apply"], 2), flt(viewed["to_pay"], 2)), (100, 0))
+        self.assertIsNone(viewed["bank_account"])
+        frozen = pay_supplier.preview_preparation(self.fixture["supplier"], [bill.name], company=self.company)
+        request = str(uuid.uuid4())
+        result = pay_supplier.prepare(frozen["preview_id"], request)
+        self.assertEqual(flt(result["credit_applied"], 2), 100)
+        self.assertIsNone(result["payment_entry"])
+        self.assertEqual(result, pay_supplier.prepare(frozen["preview_id"], request))
+        self.assertEqual(frappe.db.count("Payment Entry"), count)
+        bill.reload()
+        credit.reload()
+        self.assertEqual(flt(bill.outstanding_amount, 2), 0)
+        self.assertEqual(flt(credit.unallocated_amount, 2), 0)
+
     def test_supplier_hold_added_after_review_prevents_credit_or_payment(self):
         bill = self.invoice("Purchase Invoice", 193.41, submitted=True)
         frozen = pay_supplier.preview_preparation(

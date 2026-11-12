@@ -53,6 +53,8 @@ def load_module(name, relative, modules):
 class BillingContractTests(unittest.TestCase):
     def setUp(self):
         self.frappe = types.ModuleType("frappe")
+        self.frappe.QueryDeadlockError = type("QueryDeadlockError", (Exception,), {})
+        self.frappe.QueryTimeoutError = type("QueryTimeoutError", (Exception,), {})
         self.frappe._ = lambda value: value
         self.frappe.whitelist = lambda **kwargs: lambda function: function
         self.frappe.only_for = Mock()
@@ -84,6 +86,9 @@ class BillingContractTests(unittest.TestCase):
         setup.RETAINER = "Retainer (invoiced separately)"
         emails = types.ModuleType("books_assistant.invoice_email")
         emails.recipients = Mock(return_value=([], []))
+        emails.recipient_details = Mock(
+            return_value={"to": [], "cc": [], "contact": None}
+        )
         emails.settings = Mock()
         document = types.ModuleType("frappe.model.document")
         document.Document = Document
@@ -179,6 +184,35 @@ class BillingContractTests(unittest.TestCase):
         )
         self.assertEqual(run.status, "Prepared")
         self.assertTrue(run.saved)
+
+    def test_transient_billing_database_errors_escape_without_savepoint_recovery(self):
+        for error in (self.frappe.QueryDeadlockError, self.frappe.QueryTimeoutError):
+            run = self.br.BillingRun(
+                status="Prepared", items=[Row(project="P-1", item_status="pending")]
+            )
+            with (
+                patch.object(
+                    self.br, "approve_project", side_effect=error("Retry transaction")
+                ),
+                self.assertRaises(error),
+            ):
+                run.approve_selected(["P-1"])
+            self.frappe.db.rollback.assert_not_called()
+
+    def test_transient_email_database_errors_escape_best_effort_handler(self):
+        email = load_module(
+            "isolated_invoice_email", "books_assistant/invoice_email.py", self.modules
+        )
+        self.frappe.get_roles = Mock(return_value=["Billing Approver"])
+        email.settings = Mock(return_value=Document(send_invoice_emails=1))
+        doc = Document(is_return=0, check_permission=Mock())
+        for error in (self.frappe.QueryDeadlockError, self.frappe.QueryTimeoutError):
+            with (
+                patch.object(email, "send", side_effect=error("Retry transaction")),
+                self.assertRaises(error),
+            ):
+                email.on_submit(doc, "on_submit")
+            self.frappe.db.rollback.assert_not_called()
 
     def test_completed_or_unmigrated_projects_are_not_executed(self):
         for status in ("approved", "left_out", "review_required"):
@@ -518,6 +552,86 @@ class BillingContractTests(unittest.TestCase):
         }
         snapshot = self.snapshot_project(row, records, ["REF-PI-1"])
         self.assertEqual((snapshot["referral_cost"], snapshot["margin_pct"]), (130, 27))
+
+    def test_no_engineer_bills_does_not_query_unrelated_unbilled_timesheets(self):
+        row = Row(
+            project="P-1",
+            customer="C-1",
+            item_status="pending",
+            sales_invoice="SI-1",
+            engineer_bills="",
+        )
+        records = {
+            ("Sales Invoice", "SI-1"): Document(grand_total=1000, docstatus=0),
+            ("Project", "P-1"): Document(referrers=[]),
+        }
+        self.snapshot_project(row, records)
+        self.assertNotIn(
+            "Timesheet", [call.args[0] for call in self.frappe.get_all.call_args_list]
+        )
+        self.assertNotIn(
+            "Dynamic Link",
+            [call.args[0] for call in self.frappe.get_all.call_args_list],
+        )
+
+    def test_explicit_recipients_do_not_read_unrelated_contacts(self):
+        email = load_module(
+            "isolated_invoice_email", "books_assistant/invoice_email.py", self.modules
+        )
+        self.frappe.flags.books_assistant_billing_locked = True
+        email.check_document.return_value = Document(
+            invoice_to="billing@example.test", invoice_cc="", email_id=""
+        )
+        email.settings = Mock(return_value=Document(always_cc=""))
+        self.frappe.db.sql.side_effect = AssertionError(
+            "Unrelated contacts must not be queried"
+        )
+        result = email.recipient_details(Document(customer="C-1", contact_email=None))
+        self.assertEqual(
+            result, {"to": ["billing@example.test"], "cc": [], "contact": None}
+        )
+        email.check_document.assert_called_once_with("Customer", "C-1")
+
+    def test_actual_contact_fallback_reports_and_authorizes_only_its_source(self):
+        email = load_module(
+            "isolated_invoice_email", "books_assistant/invoice_email.py", self.modules
+        )
+        self.frappe.flags.books_assistant_billing_locked = True
+        email.check_document.return_value = Document(
+            invoice_to="", invoice_cc="", email_id=""
+        )
+        email.settings = Mock(return_value=Document(always_cc=""))
+        self.frappe.db.sql.return_value = [("ACTUAL-CONTACT", "billing@example.test")]
+        result = email.recipient_details(Document(customer="C-1", contact_email=None))
+        self.assertEqual(result["contact"], "ACTUAL-CONTACT")
+        self.assertEqual(result["to"], ["billing@example.test"])
+        email.check_document.assert_any_call("Contact", "ACTUAL-CONTACT")
+
+    def test_referral_returns_keep_signed_cost_and_supplier_duplicate_guard(self):
+        row = Row(
+            project="P-1",
+            customer="C-1",
+            item_status="pending",
+            sales_invoice="SI-1",
+            engineer_bills="PI-1",
+        )
+        records = {
+            ("Sales Invoice", "SI-1"): Document(grand_total=1000, docstatus=0),
+            ("Purchase Invoice", "PI-1"): Document(grand_total=600),
+            ("Purchase Invoice", "REF-1"): Document(
+                grand_total=100, supplier="REFERRER"
+            ),
+            ("Purchase Invoice", "RETURN-1"): Document(
+                grand_total=-40, supplier="REFERRER", is_return=1
+            ),
+            ("Project", "P-1"): Document(
+                referrers=[Row(supplier="REFERRER", percentage=10)]
+            ),
+        }
+        snapshot = self.snapshot_project(row, records, ["REF-1", "RETURN-1"])
+        self.assertEqual((snapshot["referral_cost"], snapshot["margin_pct"]), (60, 34))
+        snapshot = self.snapshot_project(row, records, ["RETURN-1"])
+        self.assertEqual((snapshot["referral_cost"], snapshot["margin_pct"]), (-40, 44))
 
     def test_edited_invoice_linkage_requires_a_new_preparation(self):
         scope = {"company": "Co-op", "currency": "USD"}

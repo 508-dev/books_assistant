@@ -148,6 +148,8 @@ class BillingRun(Document):
                 row.item_status = "approved"
                 row.error_code = None
                 row.outcome = result["message"]
+            except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+                raise
             except Exception as e:
                 frappe.db.rollback(save_point="billing_run_project")
                 frappe.clear_last_message()

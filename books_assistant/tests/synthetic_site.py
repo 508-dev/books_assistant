@@ -571,6 +571,9 @@ def run_site_tests(include_health=False):
         "books_assistant.tests.test_billing_api",
         "books_assistant.tests.test_integration_transactions",
         "books_assistant.tests.test_finance_synthetic",
+        "books_assistant.tests.test_bank_discovery_transactions",
+        "books_assistant.tests.test_bank_supplier_permissions",
+        "books_assistant.tests.test_read_api_permissions",
     ]
     if include_health:
         if "books_health" not in frappe.get_installed_apps():

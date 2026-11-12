@@ -23,8 +23,18 @@ doctype_list_js = {"Purchase Invoice": "public/js/purchase_invoice_list.js"}
 doc_events = {
     "Sales Invoice": {"on_submit": "books_assistant.invoice_email.on_submit"},
     # A payment may finish paying a client invoice, releasing the engineer bills waiting on it.
-    "Payment Entry": {"on_submit": "books_assistant.holds.release_after_payment"},
-    "Journal Entry": {"on_submit": "books_assistant.holds.release_after_payment"},
+    "Payment Entry": {
+        "before_validate": "books_assistant.bank_review.serialize_voucher_write",
+        "before_update_after_submit": "books_assistant.bank_review.serialize_voucher_write",
+        "before_cancel": "books_assistant.bank_review.serialize_voucher_write",
+        "on_submit": "books_assistant.holds.release_after_payment",
+    },
+    "Journal Entry": {
+        "before_validate": "books_assistant.bank_review.serialize_voucher_write",
+        "before_update_after_submit": "books_assistant.bank_review.serialize_voucher_write",
+        "before_cancel": "books_assistant.bank_review.serialize_voucher_write",
+        "on_submit": "books_assistant.holds.release_after_payment",
+    },
     "Communication": {"after_insert": "books_assistant.invoice_email.check_for_bounce"},
 }
 

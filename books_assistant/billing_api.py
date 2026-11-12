@@ -97,6 +97,8 @@ def _profitability(row, invoice, referral_names, scope):
             company=scope["company"],
             currency=scope["currency"],
         )
+        # ERPNext returns have a negative grand_total. Keep that signed cost;
+        # referral_fee's duplicate guard counts every noncancelled SI+supplier document, including returns.
         covered_suppliers.add(bill.supplier)
         if name not in engineer_names:
             referral_cost += flt(bill.grand_total)
@@ -149,12 +151,13 @@ def _snapshot(payload, scope):
         waiting_on = invoiced_by(bill_names(row))
         if waiting_on:
             documents.add(("Sales Invoice", waiting_on))
-        for name in frappe.get_all(
-            "Timesheet",
-            filters={"purchase_invoice": ["in", bill_names(row) or [""]]},
-            pluck="name",
-        ):
-            documents.add(("Timesheet", name))
+        if bill_names(row):
+            for name in frappe.get_all(
+                "Timesheet",
+                filters={"purchase_invoice": ["in", bill_names(row)]},
+                pluck="name",
+            ):
+                documents.add(("Timesheet", name))
         if row.sales_invoice:
             for (name,) in frappe.db.sql(
                 "select name from `tabPurchase Invoice` where referral_source_si = %s "
@@ -176,31 +179,11 @@ def _snapshot(payload, scope):
             ):
                 if name:
                     documents.add(("Timesheet", name))
-        if row.customer:
-            for name in frappe.get_all(
-                "Dynamic Link",
-                filters={
-                    "parenttype": "Contact",
-                    "link_doctype": "Customer",
-                    "link_name": row.customer,
-                },
-                pluck="parent",
-            ):
-                documents.add(("Contact", name))
     lock_documents(sorted(documents))
     # Read email settings, contacts and recipient fields with current locking reads from here through execution.
     frappe.flags.books_assistant_billing_locked = True
     settings = invoice_email.settings()
 
-    snapshots = []
-    for doctype, name in sorted(documents):
-        snapshots.append(
-            {
-                "doctype": doctype,
-                "name": name,
-                "document": _snapshot_document(doctype, name, scope),
-            }
-        )
     selected = []
     for row in rows:
         invoice = (
@@ -213,7 +196,14 @@ def _snapshot(payload, scope):
             if row.sales_invoice
             else None
         )
-        to, cc = invoice_email.recipients(invoice) if invoice else ([], [])
+        details = (
+            invoice_email.recipient_details(invoice)
+            if invoice
+            else {"to": [], "cc": [], "contact": None}
+        )
+        to, cc = details["to"], details["cc"]
+        if details["contact"]:
+            documents.add(("Contact", details["contact"]))
         will_email = bool(
             invoice
             and invoice.docstatus == 0
@@ -240,6 +230,7 @@ def _snapshot(payload, scope):
                 "issues": row.issues,
                 "issues_scope": "billing_preparation",
                 "recipients": to,
+                "recipient_contact": details["contact"],
                 "cc": cc,
                 "print_format": invoice_email.print_format(invoice)
                 if invoice
@@ -248,6 +239,14 @@ def _snapshot(payload, scope):
                 "email_state_on_success": "queued" if will_email else "not_queued",
             }
         )
+    snapshots = [
+        {
+            "doctype": doctype,
+            "name": name,
+            "document": _snapshot_document(doctype, name, scope),
+        }
+        for doctype, name in sorted(documents)
+    ]
     return {
         "api_version": 1,
         "run_id": run.name,

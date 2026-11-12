@@ -285,7 +285,12 @@ def consume_preview(
             {"status": "Completed", "result_json": encoded}, update_modified=False
         )
         preview.db_set("consumed_request", request.name, update_modified=False)
-    except Exception:
-        frappe.db.rollback(save_point="api_execution")
+    except Exception as error:
+        if isinstance(error, (frappe.QueryDeadlockError, frappe.QueryTimeoutError)):
+            # InnoDB can already have aborted the entire transaction. Rolling
+            # back to a now-missing savepoint would mask the retriable error.
+            frappe.db.rollback()
+        else:
+            frappe.db.rollback(save_point="api_execution")
         raise
     return json.loads(encoded)

@@ -12,8 +12,8 @@ frappe.ui.form.on("Billing Run", {
 		if (frm.is_new()) return;
 		const roles = frappe.user_roles;
 		const can_approve = roles.includes("Billing Approver") || roles.includes("System Manager");
-		const done = (r) => ["approved", "left_out"].includes(r.item_status);
-		const pending = (frm.doc.items || []).filter((r) => !done(r));
+		const pending = (frm.doc.items || []).filter((r) => ["pending", "failed"].includes(r.item_status));
+		const review_required = (frm.doc.items || []).filter((r) => r.item_status === "review_required");
 
 		if (frm.doc.status === "Draft") {
 			frm.add_custom_button(__("Prepare Drafts"), () => call(frm, "prepare", __("Preparing drafts…"))).addClass(
@@ -27,7 +27,7 @@ frappe.ui.form.on("Billing Run", {
 			if (can_approve && pending.length) {
 				frm.add_custom_button(__("Approve and Send"), () => approve(frm, pending)).addClass("btn-primary");
 			}
-			if (!(frm.doc.items || []).some((r) => r.item_status === "approved")) {
+			if (!review_required.length && !(frm.doc.items || []).some((r) => r.item_status === "approved")) {
 				frm.add_custom_button(__("Discard Drafts"), () =>
 					frappe.confirm(
 						__("Delete this run's draft invoices and bills, so it can be prepared again?"),
@@ -42,8 +42,9 @@ frappe.ui.form.on("Billing Run", {
 					__("{0} project(s) waiting for approval.", [pending.length]),
 					issues ? __("{0} have something to check, listed above the table.", [issues]) : "",
 					failed ? __("{0} failed to approve; see Outcome.", [failed]) : "",
+					review_required.length ? __("{0} project(s) require System Manager review before further actions.", [review_required.length]) : "",
 				].join(" "),
-				issues || failed ? "orange" : "blue"
+				issues || failed || review_required.length ? "orange" : "blue"
 			);
 		}
 		if (frm.doc.status === "Approved") {
@@ -70,10 +71,11 @@ function call(frm, method, freeze_message) {
 // Each project's issues and outcome in full, above the table.
 function render_issues(frm) {
 	const esc = frappe.utils.escape_html;
-	const rows = (frm.doc.items || []).filter((r) => r.issues || r.outcome);
+	const rows = (frm.doc.items || []).filter((r) => r.issues || r.outcome || r.item_status === "review_required");
 	const html = rows
 		.map((r) => {
 			const failed = r.item_status === "failed";
+			const repair = r.item_status === "review_required" ? `<div class="text-warning">${esc(__("Requires System Manager review; excluded from approval and leave-out selections."))}</div>` : "";
 			const outcome = r.outcome
 				? `<div class="${failed ? "text-danger" : "text-success"}">${esc(r.outcome)}</div>`
 				: "";
@@ -83,7 +85,7 @@ function render_issues(frm) {
 				.map((i) => `<li>${esc(i)}</li>`)
 				.join("");
 			return `<div style="margin-bottom: 10px"><b>${esc(r.project)}</b> · ${esc(r.customer || __("internal"))}
-				${outcome}${issues ? `<ul style="margin: 4px 0 0; padding-left: 18px">${issues}</ul>` : ""}</div>`;
+				${repair}${outcome}${issues ? `<ul style="margin: 4px 0 0; padding-left: 18px">${issues}</ul>` : ""}</div>`;
 		})
 		.join("");
 	frm.get_field("issues_html").$wrapper.html(
