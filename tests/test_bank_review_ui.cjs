@@ -101,6 +101,8 @@ test("malformed successful responses retain identifiers until a complete result 
 		{ message: { status: "completed", operation_id: "OPERATION", results: [] } },
 		{ message: { status: "completed", operation_id: "OPERATION", results: [null] } },
 		{ message: { status: "completed", operation_id: "OPERATION", results: [{ name: "OTHER", ok: true, status: "approved", message: "Wrong line" }] } },
+		{ message: { status: "completed", operation_id: "OPERATION", results: [{ name: "BT-1", ok: false, status: "failed", message: "Contradictory batch status" }] } },
+		{ message: { status: "partial_failure", operation_id: "OPERATION", results: [{ name: "BT-1", ok: true, status: "approved", message: "Contradictory batch status" }] } },
 	]) {
 		const h = harness({ approvalResponses: [() => Promise.resolve(response)] });
 		await h.review.approve();
@@ -162,9 +164,9 @@ test("permission or unclassified errors keep the original pending operation", as
 	assert.deepEqual(plain(callsTo(h, "approve")[0].args), plain(callsTo(h, "approve")[1].args));
 });
 
-test("a completed partial failure is a known result and can be reviewed afresh", async () => {
+test("a recorded partial failure is a known result and can be reviewed afresh", async () => {
 	const h = harness({ approvalResponses: [() => Promise.resolve({ message: {
-		status: "completed", operation_id: "OPERATION-1",
+		status: "partial_failure", operation_id: "OPERATION-1",
 		results: [{ name: "BT-1", ok: false, status: "failed", message: "Account requires correction" }],
 	} })] });
 	await h.review.approve();

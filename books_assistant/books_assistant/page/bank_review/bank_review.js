@@ -170,13 +170,15 @@ class BankReview {
 			const message = response?.message;
 			this.approval_in_flight = false;
 			const names = new Set(pending.bank_transactions);
-			const valid = message?.status === "completed" && typeof message.operation_id === "string"
+			const valid = ["completed", "partial_failure"].includes(message?.status)
+				&& typeof message.operation_id === "string"
 				&& message.operation_id.length > 0 && Array.isArray(message.results)
 				&& message.results.length === names.size
 				&& new Set(message.results.map((row) => row?.name)).size === names.size
 				&& message.results.every((row) => row && names.has(row.name) && typeof row.ok === "boolean"
 					&& typeof row.message === "string"
-					&& (row.ok ? ["approved", "already_reconciled"].includes(row.status) : row.status === "failed"));
+					&& (row.ok ? ["approved", "already_reconciled"].includes(row.status) : row.status === "failed"))
+				&& ((message.status === "partial_failure") === message.results.some((row) => !row.ok));
 			if (!valid) {
 				this.uncertain_approval();
 				return;
