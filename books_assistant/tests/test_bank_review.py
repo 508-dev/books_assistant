@@ -116,9 +116,8 @@ class TestPaySupplier(unittest.TestCase):
     def test_prepares_an_unsaved_payment_for_what_is_owed(self):
         supplier = frappe.db.get_value("Purchase Invoice", {"docstatus": 1, "outstanding_amount": [">", 1], "is_return": 0},
                                        "supplier")
-        preview = ps.preview(supplier, all_eligible=True)
-        frozen = ps.preview_preparation(supplier, invoices=[b.name for b in preview["bills"]])
-        result = ps.prepare(frozen["preview_id"], frappe.generate_hash(length=24))
+        preview = ps.preview(supplier)
+        result = ps.prepare(supplier)
         payment = result["payment_entry"]
         self.assertEqual(payment["__islocal"], 1)
         self.assertAlmostEqual(flt(payment["paid_amount"]), flt(preview["to_pay"]), places=2)

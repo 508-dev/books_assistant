@@ -16,9 +16,6 @@
   "sales_invoice",
   "engineer_bills",
   "issues",
-  "item_status",
-  "error_code",
-  "result_json",
   "outcome"
  ],
  "fields": [
@@ -108,27 +105,6 @@
    "fieldtype": "Small Text",
    "label": "Outcome",
    "read_only": 1
-  },
-  {
-   "fieldname": "item_status",
-   "fieldtype": "Select",
-   "label": "Status",
-   "options": "pending\napproved\nleft_out\nfailed\nreview_required",
-   "default": "pending",
-   "read_only": 1
-  },
-  {
-   "fieldname": "error_code",
-   "fieldtype": "Data",
-   "label": "Error Code",
-   "read_only": 1
-  },
-  {
-   "fieldname": "result_json",
-   "fieldtype": "Long Text",
-   "label": "Approval Result",
-   "read_only": 1,
-   "hidden": 1
   }
  ],
  "istable": 1,
