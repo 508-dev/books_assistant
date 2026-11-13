@@ -176,12 +176,10 @@ class BankSupplierContractTests(unittest.TestCase):
             "bills": [Row(name="BILL-1")],
             "credits": [Row(reference_type="Payment Entry", reference_name="CREDIT-1")],
             "bank_details": {"bank_account": "BANK-ACCOUNT"},
-            "to_pay": 100,
         }
         events = []
         with (
             patch.object(self.pay, "_authorize_preparation"),
-            patch.object(self.pay, "assess_funding", return_value={"cash": {"status": "unverified"}}),
             patch.object(
                 self.pay,
                 "_preview",
@@ -196,29 +194,6 @@ class BankSupplierContractTests(unittest.TestCase):
         self.assertIn(("Purchase Invoice", "BILL-1"), events[1])
         self.assertIn(("Payment Entry", "CREDIT-1"), events[1])
         self.assertEqual(events[2], "read")
-
-    def test_supplier_snapshot_freezes_funding_evidence_and_reservations(self):
-        payload = {"supplier": "Supplier", "invoices": ["BILL-1"], "bank_account": "BANK"}
-        def payable(*args):
-            return {"bills": [Row(name="BILL-1")], "credits": [], "to_pay": 100,
-                    "bank_details": {"bank_account": "BANK-ACCOUNT"}}
-        with (
-            patch.object(self.pay, "_authorize_preparation"),
-            patch.object(self.pay, "_preview", side_effect=payable),
-            patch.object(self.pay, "lock_documents"),
-            patch.object(self.pay, "assess_funding", side_effect=[
-                {"cash": {"snapshot": "BALANCE-1", "reserved": 0}},
-                {"cash": {"snapshot": "BALANCE-2", "reserved": 500}},
-            ]) as funding,
-        ):
-            first = self.pay._preparation_snapshot(payload, SCOPE)
-            second = self.pay._preparation_snapshot(payload, SCOPE)
-        funding.assert_called_with("BANK-ACCOUNT", 100, ["BILL-1"], "Supplier")
-        # consume_preview hashes the complete returned snapshot before applying credit.
-        from books_assistant.integration import fingerprint
-        self.assertNotEqual(fingerprint(first), fingerprint(second))
-        self.assertEqual(first["funding"]["cash"]["reserved"], 0)
-        self.assertEqual(second["funding"]["cash"]["reserved"], 500)
 
     def test_supplier_preparation_applies_reviewed_credit_without_saving_or_sending(
         self,

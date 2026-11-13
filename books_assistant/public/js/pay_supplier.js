@@ -58,9 +58,7 @@ books_assistant.pay_supplier = function (supplier, invoices) {
 			let in_flight = false;
 			let reviewing = false;
 			const primary_label = p.to_pay > 0 ? __("Prepare payment") : __("Apply credit");
-			let funding_request = 0;
-			let dialog;
-			dialog = new frappe.ui.Dialog({
+			const dialog = new frappe.ui.Dialog({
 				title: __("Pay {0}", [supplier]),
 				size: "large",
 				fields: [
@@ -81,10 +79,8 @@ books_assistant.pay_supplier = function (supplier, invoices) {
 						default: p.bank_account,
 						reqd: p.to_pay > 0,
 						hidden: p.to_pay <= 0,
-						onchange: () => { if (dialog) refresh_funding(); },
-						get_query: () => ({ filters: { account_type: "Bank", is_group: 0, company: p.company } }),
+						get_query: () => ({ filters: { account_type: "Bank", is_group: 0 } }),
 					},
-					{ fieldname: "funding", fieldtype: "HTML", hidden: p.to_pay <= 0 },
 				],
 				primary_action_label: primary_label,
 				primary_action: prepare_preview,
@@ -107,7 +103,7 @@ books_assistant.pay_supplier = function (supplier, invoices) {
 					if (message.payment_entry) {
 						const payment = frappe.model.sync(message.payment_entry)[0];
 						frappe.set_route("Form", payment.doctype, payment.name);
-						frappe.show_alert({ message: __("Save the draft, then use Review payout funding before sending money."), indicator: "blue" });
+						frappe.show_alert({ message: __("Check the payment, then save and submit."), indicator: "blue" });
 					} else {
 						frappe.show_alert({ message: __("Applied {0} of credit; nothing left to pay.", [money(message.credit_applied)]), indicator: "green" });
 					}
@@ -142,7 +138,7 @@ books_assistant.pay_supplier = function (supplier, invoices) {
 							money(reviewed.credit_to_apply), documents, money(reviewed.to_pay), esc(reviewed.bank_account),
 						])
 						: __("Apply {0} of credit to {1}? No payment document or bank transfer will be created.", [money(reviewed.credit_to_apply), documents]);
-					frappe.confirm((reviewed.funding ? books_assistant.funding_html(reviewed.funding) : "") + consequence, () => {
+					frappe.confirm(consequence, () => {
 						reviewing = false;
 						pending = { preview_id: frozen.preview_id, request_id: crypto.randomUUID() };
 						dialog.set_primary_action(__("Retry result"), send_pending);
@@ -151,26 +147,6 @@ books_assistant.pay_supplier = function (supplier, invoices) {
 				}, () => { reviewing = false; });
 			}
 
-			async function refresh_funding() {
-				const request = ++funding_request;
-				const wrapper = dialog.fields_dict.funding.$wrapper;
-				if (p.to_pay <= 0) { wrapper.empty(); return; }
-				wrapper.text(__("Checking funding…"));
-				try {
-					const gl = dialog.get_value("bank_account");
-					if (!gl) { wrapper.text(__("Choose a bank account to check funding.")); return; }
-					const { message: bank } = await frappe.db.get_value("Bank Account", {account: gl, is_company_account: 1}, "name");
-					if (request !== funding_request) return;
-					if (!bank || !bank.name) { wrapper.text(__("Funding unverified: no company bank account.")); return; }
-					const { message } = await frappe.call({method: "books_assistant.funding.check", args: {
-						bank_account: bank.name, amount: p.to_pay, invoices: p.bills.map((b) => b.name), supplier,
-					}});
-					if (request === funding_request) wrapper.html(books_assistant.funding_html(message));
-				} catch (error) {
-					if (request === funding_request) wrapper.text(__("Funding unverified: unable to complete the check."));
-				}
-			}
 			dialog.show();
-			refresh_funding();
 		});
 };

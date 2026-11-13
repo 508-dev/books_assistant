@@ -23,8 +23,6 @@ class AutomationSettings(Document):
         self.set_onload("status", status())
 
     def validate(self):
-        if self.funding_balance_max_age_hours is None or not 0 < float(self.funding_balance_max_age_hours) <= 24:
-            frappe.throw("Maximum Bank Balance Age must be greater than zero and at most 24 hours.")
         for field in ("always_cc", "health_digest_recipients"):
             self.set(field, "\n".join(split_emails(self.get(field))))
 

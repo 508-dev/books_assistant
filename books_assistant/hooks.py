@@ -11,7 +11,7 @@ app_license = "mit"
 after_install = "books_assistant.setup.create_fields"
 after_migrate = ["books_assistant.setup.create_fields"]
 
-app_include_js = ["/assets/books_assistant/js/funding.js", "/assets/books_assistant/js/pay_supplier.js"]
+app_include_js = ["/assets/books_assistant/js/pay_supplier.js"]
 
 doctype_js = {
     "Supplier": "public/js/supplier.js",
@@ -28,9 +28,6 @@ doc_events = {
         "before_update_after_submit": "books_assistant.bank_review.serialize_voucher_write",
         "before_cancel": "books_assistant.bank_review.serialize_voucher_write",
         "on_submit": "books_assistant.holds.release_after_payment",
-        "on_update": "books_assistant.funding.invalidate_payment",
-        "on_cancel": "books_assistant.funding.invalidate_payment",
-        "on_update_after_submit": "books_assistant.funding.invalidate_payment",
     },
     "Journal Entry": {
         "before_validate": "books_assistant.bank_review.serialize_voucher_write",

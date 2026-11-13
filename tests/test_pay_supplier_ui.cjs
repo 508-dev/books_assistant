@@ -12,17 +12,15 @@ function harness({ count = 1, creditOnly = false, prepareResponses = [] } = {}) 
 	const view = { company: "Co-op", currency: "USD", bills, held: [], fronting: [],
 		bills_total: count * 100, credit_total: creditOnly ? count * 100 : 0,
 		credit_to_apply: creditOnly ? count * 100 : 0, to_pay: creditOnly ? 0 : count * 100,
-		bank_account: creditOnly ? null : "BANK", funding: creditOnly ? null : {cash: {status: "unverified"}} };
+		bank_account: creditOnly ? null : "BANK" };
 	let nextId = 0, previews = 0;
 	const context = { books_assistant: {}, crypto: { randomUUID: () => `REQUEST-${++nextId}` },
 		__: (value, args = []) => value.replace(/\{(\d+)\}/g, (_, n) => String(args[n])),
 		format_currency: (value, currency) => `${currency} ${value}` };
 	context.frappe = {
-		db: {get_value: async () => ({message: {name: "BANK-ACCOUNT"}})},
 		provide() {}, utils: { escape_html: (value) => String(value) }, router: { slug: (value) => value.toLowerCase().replaceAll(" ", "-") },
 		ui: { Dialog: class {
-			constructor(options) { this.options = options; this.fields_dict = {funding: {$wrapper: {text() {}, html() {}, empty() {}}}}; dialogs.push(this); }
-            get_value() { return view.bank_account; }
+			constructor(options) { this.options = options; dialogs.push(this); }
 			set_primary_action(label, callback) { this.options.primary_action_label = label; this.options.primary_action = callback; }
 			show() {} hide() { this.hidden = true; }
 		} },
@@ -31,7 +29,6 @@ function harness({ count = 1, creditOnly = false, prepareResponses = [] } = {}) 
 		model: { sync: (value) => [value] },
 		call: (request) => {
 			calls.push(request);
-			if (request.method === "books_assistant.funding.check") return Promise.resolve({message: view.funding});
 			if (request.method.endsWith(".preview")) return Promise.resolve({ message: view });
 			if (request.method.endsWith(".preview_preparation")) {
 				return Promise.resolve({ message: { preview_id: `PREVIEW-${++previews}`, snapshot: view } });
@@ -42,7 +39,6 @@ function harness({ count = 1, creditOnly = false, prepareResponses = [] } = {}) 
 			return Promise.resolve({ message: response || { status: "prepared", operation_id: "OPERATION-1", payment_entry: null, credit_applied: view.credit_to_apply } });
 		},
 	};
-	context.books_assistant.funding_html = () => "<p>Funding review</p>";
 	vm.runInNewContext(source, context);
 	return { context, calls, dialogs, confirmations, notices };
 }
@@ -146,20 +142,4 @@ test("malformed success response retains original identifiers until a valid resu
 	assert.equal(executions[0].args.request_id, executions[1].args.request_id);
 	assert.equal(callsTo(h, "preview_preparation").length, 1);
 	assert.equal(dialog.hidden, true);
-});
-
-
-test("credit-only review makes no bank funding request", async () => {
-    const h = harness({creditOnly: true});
-    await h.context.books_assistant.pay_supplier("Supplier");
-    await h.dialogs[0].options.primary_action({});
-    assert.equal(h.calls.some((call) => call.method === "books_assistant.funding.check"), false);
-    assert.doesNotMatch(h.confirmations[0].text, /Funding review/);
-});
-
-test("payout preparation includes the frozen funding review", async () => {
-    const h = harness();
-    await h.context.books_assistant.pay_supplier("Supplier");
-    await h.dialogs[0].options.primary_action({bank_account: "BANK"});
-    assert.match(h.confirmations[0].text, /Funding review/);
 });
