@@ -10,9 +10,6 @@ const CONFIDENCE = {
 
 class BankReview {
 	constructor(wrapper) {
-		this.pending_approval = null;
-		this.approval_in_flight = false;
-		this.reviewing_approval = false;
 		this.page = frappe.ui.make_app_page({
 			parent: wrapper,
 			title: __("Bank Review"),
@@ -121,8 +118,6 @@ class BankReview {
 	}
 
 	approve() {
-		if (this.pending_approval) return this.retry_approval();
-		if (this.reviewing_approval || this.approval_in_flight) return;
 		const names = this.selected();
 		if (!names.length) {
 			frappe.msgprint(__("Select the lines to approve first."));
@@ -130,79 +125,24 @@ class BankReview {
 		}
 		const selected = this.rows.filter((row) => names.includes(row.bank_transaction));
 		const expected_fingerprints = Object.fromEntries(selected.map((row) => [row.bank_transaction, row.fingerprint]));
-		this.reviewing_approval = true;
-		return frappe.call({
+		frappe.call({
 			method: "books_assistant.bank_review.preview_approval",
 			args: { bank_transactions: names, expected_fingerprints, bank_account: this.bank_account.get_value() || null },
 			freeze: true,
-		}).then((response) => {
-			const frozen = response?.message;
-			if (typeof frozen?.preview_id !== "string" || !frozen.preview_id) {
-				this.reviewing_approval = false;
-				frappe.msgprint(__("Unable to prepare the approval. Refresh Bank Review and try again."));
-				return;
-			}
+		}).then(({ message: frozen }) => {
+			const request_id = crypto.randomUUID();
 			frappe.confirm(
 				__("Approve {0} line(s)? Each one creates or links the entry shown in its suggestion.", [names.length]),
-				() => {
-					this.reviewing_approval = false;
-					if (this.pending_approval) return this.retry_approval();
-					this.pending_approval = {
-						preview_id: frozen.preview_id, request_id: crypto.randomUUID(), bank_transactions: [...names],
-					};
-					this.page.set_primary_action(__("Retry result"), () => this.approve(), "refresh");
-					return this.retry_approval();
-				},
-				() => { this.reviewing_approval = false; }
+				() => frappe.call({
+					method: "books_assistant.bank_review.approve",
+					args: { preview_id: frozen.preview_id, request_id },
+					freeze: true, freeze_message: __("Approving…"),
+				}).then(({ message }) => {
+					this.show_results(message.results || []);
+					this.load();
+				})
 			);
-		}, () => { this.reviewing_approval = false; });
-	}
-
-	retry_approval() {
-		if (!this.pending_approval || this.approval_in_flight) return;
-		this.approval_in_flight = true;
-		const pending = this.pending_approval;
-		return frappe.call({
-			method: "books_assistant.bank_review.approve",
-			args: { preview_id: pending.preview_id, request_id: pending.request_id },
-			freeze: true, freeze_message: __("Retrieving approval result…"),
-		}).then((response) => {
-			const message = response?.message;
-			this.approval_in_flight = false;
-			const names = new Set(pending.bank_transactions);
-			const valid = ["completed", "partial_failure"].includes(message?.status)
-				&& typeof message.operation_id === "string"
-				&& message.operation_id.length > 0 && Array.isArray(message.results)
-				&& message.results.length === names.size
-				&& new Set(message.results.map((row) => row?.name)).size === names.size
-				&& message.results.every((row) => row && names.has(row.name) && typeof row.ok === "boolean"
-					&& typeof row.message === "string"
-					&& (row.ok ? ["approved", "already_reconciled"].includes(row.status) : row.status === "failed"))
-				&& ((message.status === "partial_failure") === message.results.some((row) => !row.ok));
-			if (!valid) {
-				this.uncertain_approval();
-				return;
-			}
-			this.pending_approval = null;
-			this.page.set_primary_action(__("Approve selected"), () => this.approve(), "check");
-			this.show_results(message.results);
-			return this.load();
-		}, (error) => {
-			this.approval_in_flight = false;
-			if (["PREVIEW_EXPIRED", "PREVIEW_STALE"].includes(error?.responseJSON?.error_code)) {
-				// The server checked the request ledger first and confirmed no execution.
-				this.pending_approval = null;
-				this.page.set_primary_action(__("Approve selected"), () => this.approve(), "check");
-				return this.load();
-			}
-			this.uncertain_approval();
 		});
-	}
-
-	uncertain_approval() {
-		// A timeout can follow committed bookings. Keep both original IDs and
-		// retrieve their recorded result before allowing another approval.
-		frappe.msgprint(__("The result is uncertain. Use Retry result to retrieve the original approval before starting another one."));
 	}
 
 	show_results(results) {
