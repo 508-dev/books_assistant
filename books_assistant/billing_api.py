@@ -70,23 +70,6 @@ def _snapshot_document(doctype, name, scope):
     doc = check_document(
         doctype, name, company=scope["company"], currency=scope["currency"]
     )
-    if frappe.session.user != "Administrator":
-        # Raw snapshots retain every source value for stale approval checks.
-        # A row-level read grant alone does not permit parent/child fields at higher permlevels.
-        readable_levels = doc.get_permlevel_access("read")
-        fields = list(doc.meta.fields)
-        for table in doc.meta.get_table_fields():
-            fields.extend(frappe.get_meta(table.options).fields or [])
-        if any(
-            field.permlevel and field.permlevel not in readable_levels
-            for field in fields
-        ):
-            frappe.throw(
-                _(
-                    "Full field read access is required for each source document in a billing preview."
-                ),
-                frappe.PermissionError,
-            )
     data = doc.as_dict()
     # Onload/UI fields are not part of the stored financial document.
     return {key: value for key, value in data.items() if not key.startswith("__")}
