@@ -105,17 +105,7 @@ def initialise_settings():
     predates the app), so it waits for the migrate that follows instead of failing the install."""
     if not frappe.db.exists("DocType", "Automation Settings"):
         return
-    # tabSingles has no `name` column, so db.exists (which selects name)
-    # cannot reliably test its rows. Never reset saved switches on migrate.
-    if frappe.db.sql(
-        "select 1 from `tabSingles` where doctype = %s limit 1", "Automation Settings"
-    ):
-        # Numeric singleton reads cast an absent field to zero; inspect its row.
-        if not frappe.db.sql(
-            "select 1 from `tabSingles` where doctype = %s and field = %s limit 1",
-            ("Automation Settings", "funding_balance_max_age_hours"),
-        ):
-            frappe.db.set_single_value("Automation Settings", "funding_balance_max_age_hours", 4)
+    if frappe.db.exists("Singles", {"doctype": "Automation Settings"}):
         return
     from books_assistant.books_assistant.doctype.automation_settings.automation_settings import load_site_config
 

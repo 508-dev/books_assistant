@@ -1,4 +1,3 @@
 [pre_model_sync]
 
 [post_model_sync]
-books_assistant.patches.structure_billing_status

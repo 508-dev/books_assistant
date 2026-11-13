@@ -1,38 +1,28 @@
+// On a draft payment to a supplier, say before any money is sent if the client hasn't paid for the bills yet.
+// (erp_rules says the same when the payment is submitted, which is after the bank transfer.)
 frappe.provide("books_assistant");
 
-books_assistant.show_fronting = frappe.utils.debounce(async function (frm) {
-	const request = (frm._funding_request || 0) + 1;
-	frm._funding_request = request;
+books_assistant.show_fronting = frappe.utils.debounce(function (frm) {
 	const refs = (frm.doc.references || []).filter((r) => r.reference_doctype === "Purchase Invoice" && r.reference_name);
-	if (frm.doc.docstatus !== 0 || frm.doc.payment_type !== "Pay" || frm.doc.party_type !== "Supplier" || !refs.length) {
+	if (frm.doc.docstatus !== 0 || frm.doc.payment_type !== "Pay" || !refs.length) {
 		frm.set_intro("");
 		return;
 	}
-	if (!frappe.user_roles.some((r) => ["Accounts Manager", "System Manager"].includes(r))) {
-		frm.set_intro(__("An Accounts Manager must review payout funding before money is sent."), "orange");
-		return;
-	}
-	if (!frm.is_new() && frm.is_dirty()) {
-		frm.set_intro(__("Save changes to refresh the funding check. Existing payout reservations remain held."), "orange");
-		return;
-	}
-	frm.set_intro(__("Funding unverified: checking…"), "orange");
-	try {
-		let report;
-		if (!frm.is_new() && !frm.is_dirty()) {
-			({ message: report } = await frappe.call({method: "books_assistant.funding.check_payment", args: {payment_entry: frm.doc.name}}));
-		} else {
-			const { message: bank } = await frappe.db.get_value("Bank Account", {account: frm.doc.paid_from, is_company_account: 1}, "name");
-			if (!bank || !bank.name) throw new Error("Missing bank account");
-			({ message: report } = await frappe.call({method: "books_assistant.funding.check", args: {
-				bank_account: bank.name, amount: frm.doc.paid_amount || 0, supplier: frm.doc.party,
-				invoices: refs.map((r) => r.reference_name),
-			}}));
-		}
-		if (request === frm._funding_request) frm.set_intro(books_assistant.funding_html(report), "orange");
-	} catch (error) {
-		if (request === frm._funding_request) frm.set_intro(__("Funding unverified: unable to complete the check. Review funding before sending money."), "orange");
-	}
+	frappe
+		.call({
+			method: "books_assistant.pay_supplier.payment_warnings",
+			args: { references: refs.map((r) => ({ reference_doctype: r.reference_doctype, reference_name: r.reference_name })) },
+		})
+		.then(({ message }) => {
+			frm.set_intro("");
+			if (message && message.length) {
+				frm.set_intro(
+					`<b>${__("Before you send this money:")}</b><br>` +
+						message.map((m) => frappe.utils.escape_html(m)).join("<br><br>"),
+					"orange"
+				);
+			}
+		});
 }, 300);
 
 // ERPNext fills Company Bank Account with the company default (Chase) even when the money moves through
@@ -51,23 +41,12 @@ frappe.ui.form.on("Payment Entry", {
 	refresh(frm) {
 		books_assistant.show_fronting(frm);
 		if (frm.is_new()) books_assistant.sync_company_bank(frm);
-		if (frm.doc.docstatus === 0 && frm.doc.payment_type === "Pay" && frm.doc.party_type === "Supplier"
-			&& frappe.user_roles.some((r) => ["Accounts Manager", "System Manager"].includes(r))) {
-			frm.add_custom_button(__("Review payout funding"), () => books_assistant.review_funding(frm));
-			frm.add_custom_button(__("Record bank balance"), () => frappe.new_doc("Bank Funding Snapshot"));
-		}
 	},
-	paid_from(frm) { books_assistant.sync_company_bank(frm); books_assistant.show_fronting(frm); },
-	paid_to(frm) { books_assistant.sync_company_bank(frm); books_assistant.show_fronting(frm); },
-	paid_amount: (frm) => books_assistant.show_fronting(frm),
-	party: (frm) => books_assistant.show_fronting(frm),
-	party_bank_account: (frm) => books_assistant.show_fronting(frm),
-	company: (frm) => books_assistant.show_fronting(frm),
-	payment_type: (frm) => books_assistant.show_fronting(frm),
+	paid_from: (frm) => books_assistant.sync_company_bank(frm),
+	paid_to: (frm) => books_assistant.sync_company_bank(frm),
 	references_remove: (frm) => books_assistant.show_fronting(frm),
 });
 
 frappe.ui.form.on("Payment Entry Reference", {
 	reference_name: (frm) => books_assistant.show_fronting(frm),
-	allocated_amount: (frm) => books_assistant.show_fronting(frm),
 });
