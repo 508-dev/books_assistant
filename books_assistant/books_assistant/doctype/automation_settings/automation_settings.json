@@ -6,7 +6,6 @@
  "engine": "InnoDB",
  "field_order": [
   "status_section", "status_html",
-  "bank_automation_section", "bank_auto_learn_enabled", "bank_auto_book_enabled", "bank_auto_book_user", "bank_auto_scan_after", "bank_auto_last_run_on", "bank_auto_last_summary",
   "invoice_section", "send_invoice_emails", "invoice_print_format", "timesheet_print_format", "column_break_invoice", "always_cc", "email_subject", "email_body",
   "payout_section", "hold_engineer_bills", "auto_release_holds", "funding_balance_max_age_hours",
   "checks_section", "check_discount_reason", "check_hours_as_quantity", "check_due_date", "column_break_checks", "check_no_cash_account", "check_duplicate_payment", "check_client_paid",
@@ -15,13 +14,6 @@
  "fields": [
   {"fieldname": "status_section", "fieldtype": "Section Break", "label": "Status"},
   {"fieldname": "status_html", "fieldtype": "HTML", "label": "Status"},
-  {"fieldname": "bank_automation_section", "fieldtype": "Section Break", "label": "Bank learning and automatic booking"},
-  {"default": "0", "fieldname": "bank_auto_learn_enabled", "fieldtype": "Check", "label": "Learn Bank Rules Automatically", "description": "Hourly, learn recurring expense/income categories from independent reconciled history. Learned suggestions never authorize automatic booking."},
-  {"default": "0", "fieldname": "bank_auto_book_enabled", "fieldtype": "Check", "label": "Book Approved Bank Rules Automatically", "description": "Hourly, book only eligible bank lines using individually authorized rules with fixed amount limits. Turn this off to stop automatic booking."},
-  {"fieldname": "bank_auto_book_user", "fieldtype": "Link", "options": "User", "label": "Bank Automation User", "description": "Enabled ERP user with Accounts Manager or System Manager role. All scheduled bank work runs with this user's record permissions."},
-  {"fieldname": "bank_auto_scan_after", "fieldtype": "Data", "label": "Last Scanned Bank Transaction", "read_only": 1, "hidden": 1},
-  {"fieldname": "bank_auto_last_run_on", "fieldtype": "Datetime", "label": "Last Bank Automation Run", "read_only": 1},
-  {"fieldname": "bank_auto_last_summary", "fieldtype": "Code", "options": "JSON", "label": "Last Bank Automation Summary", "read_only": 1},
   {"fieldname": "invoice_section", "fieldtype": "Section Break", "label": "Client invoice emails"},
   {"default": "1", "description": "Email a client invoice, with its PDF, when a Billing Approver submits it (including through a Billing Run). Anyone can still send one with the Email Invoice button.", "fieldname": "send_invoice_emails", "fieldtype": "Check", "label": "Email Invoices on Approval"},
   {"description": "Used unless the customer has its own Invoice Print Format. Leave empty to use ERPNext's standard layout.", "fieldname": "invoice_print_format", "fieldtype": "Link", "label": "Default Print Format", "options": "Print Format"},

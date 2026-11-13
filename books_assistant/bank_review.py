@@ -420,9 +420,6 @@ def execute(s):
         return _("Created {0} for both sides of the transfer").format(journal)
     if s["kind"] == "rule":
         journal = journal_from_line(s["bank_transaction"], s["account"])
-        from books_assistant.bank_automation import record_rule_booking
-
-        record_rule_booking(s["bank_transaction"], s["rule"], journal)
         rule = frappe.get_doc("Bank Rule", s["rule"])
         rule.db_set({"times_used": rule.times_used + 1, "last_used_on": nowdate()}, update_modified=False)
         return _("Created {0}").format(journal)
