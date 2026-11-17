@@ -1,0 +1,27 @@
+.start-here { padding: 4px 0 12px; }
+.start-intro { color: var(--text-muted); margin-bottom: 18px; font-size: 14px; }
+.start-section { margin-bottom: 22px; }
+.start-section h5 {
+	font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
+	color: var(--text-muted); margin: 0 0 10px; font-weight: 600;
+}
+.start-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.start-tile {
+	position: relative; display: flex; flex-direction: column; gap: 6px; text-align: left;
+	padding: 18px 18px 14px; min-height: 118px; cursor: pointer;
+	border: 1px solid var(--border-color); border-radius: 12px;
+	background: var(--card-bg); color: var(--text-color);
+	box-shadow: var(--card-shadow, none); transition: transform 0.08s ease, border-color 0.08s ease;
+}
+.start-tile:hover { border-color: var(--primary, #2490ef); transform: translateY(-1px); }
+.start-tile:focus-visible { outline: 2px solid var(--primary, #2490ef); outline-offset: 2px; }
+.start-tile .emoji { font-size: 26px; line-height: 1; }
+.start-tile .title { font-size: 16px; font-weight: 600; }
+.start-tile .sub { font-size: 13px; color: var(--text-muted); line-height: 1.35; }
+.start-tile .badge-count {
+	position: absolute; top: 14px; right: 14px; font-size: 12px; font-weight: 600;
+	padding: 2px 8px; border-radius: 999px; background: var(--bg-orange, #fff3e0); color: var(--text-on-orange, #c25e00);
+}
+.start-tile .badge-count.calm { background: var(--bg-gray, #f3f3f3); color: var(--text-muted); }
+.start-tile .how { margin-top: auto; font-size: 12px; align-self: flex-start; }
+.start-tile .how a { color: var(--text-muted); text-decoration: underline; }

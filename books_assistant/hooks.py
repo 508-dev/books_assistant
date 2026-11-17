@@ -26,6 +26,7 @@ doc_events = {
     "Payment Entry": {"on_submit": "books_assistant.holds.release_after_payment"},
     "Journal Entry": {"on_submit": "books_assistant.holds.release_after_payment"},
     "Communication": {"after_insert": "books_assistant.invoice_email.check_for_bounce"},
+    "User": {"before_insert": "books_assistant.start_page.default_for_new_user"},
 }
 
 scheduler_events = {
