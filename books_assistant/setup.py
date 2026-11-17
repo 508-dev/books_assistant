@@ -95,6 +95,10 @@ def create_fields():
             {"doctype": "Role", "role_name": BILLING_APPROVER, "desk_access": 1, "is_custom": 1}
         ).insert(ignore_permissions=True)
     initialise_settings()
+    if frappe.db.exists("DocType", "Custom HTML Block"):
+        from books_assistant import start_page
+
+        start_page.ensure()
 
 
 def initialise_settings():

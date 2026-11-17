@@ -7,6 +7,23 @@ Prepares routine bookkeeping in ERPNext so a person only has to approve it. Noth
 - [Monthly Billing Run](#monthly-billing-run): client invoices and engineer bills from timesheets; bills held until the client pays.
 - [Invoice emails](#invoice-emails): sent on approval, with chosen recipients and PDF layout, and bounce handling.
 - [Automation Settings](#automation-settings): what the automations are doing, and a switch for each.
+- [Start Here page](#start-here-page): big buttons for the common tasks, as everyone's landing page.
+
+## Start Here page
+
+The first thing everyone sees when they open the ERP is **Start Here**: big buttons for the common tasks, each with a link to its step-by-step guide on the wiki. People only see the buttons their roles let them use.
+
+- **Everyone:** log my hours, my timesheets, where's my pay.
+- **Project managers:** log hours for another engineer, add a client or a client project; System Managers can also set up a new engineer.
+- **Accounts Managers:**
+  - pay all of a supplier's bills, or pick some of them;
+  - bills waiting for clients;
+  - Bank Review, the Books Health check and Automation Settings.
+- **Billing Approvers:** monthly billing, email an invoice, unpaid client invoices.
+
+Some buttons show live counts, such as bank lines waiting or bills ready to pay.
+
+It's a public workspace with one Custom HTML Block, created and updated on every migrate from `books_assistant/start_page/`. Edit those files, not the records in the ERP. The workspace has no module, because Frappe only shows a module's workspaces to people with access to that module. It's set as the default landing page for every user who hasn't chosen their own, including new users. Anyone can still pick a different default in their settings.
 
 ## Bank Review
 
